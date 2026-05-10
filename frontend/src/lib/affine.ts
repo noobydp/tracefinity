@@ -23,11 +23,3 @@ export function flipAround(m: AffineMatrix, axis: 'horizontal' | 'vertical', cx:
   }
   return [a, -b, c, -d, e, -f + 2 * cy]
 }
-
-export function affineEquals(a: AffineMatrix | null | undefined, b: AffineMatrix | null | undefined): boolean {
-  if (!a || !b) return a === b
-  for (let i = 0; i < 6; i++) {
-    if (Math.abs(a[i] - b[i]) > 1e-9) return false
-  }
-  return true
-}

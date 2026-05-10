@@ -37,6 +37,7 @@ from app.models.schemas import (
     Polygon,
     FingerHole,
     Tool,
+    ToolDetailResponse,
     ToolSummary,
     ToolListResponse,
     ToolUpdateRequest,
@@ -62,6 +63,9 @@ from app.services.bin_store import BinStore
 from app.services.bin_service import sync_placed_tools
 from app.services.image_service import generate_tool_thumbnail
 router = APIRouter()
+
+# Heuristic mismatch score combining a label penalty with bbox and point deltas measured in mm.
+SOURCE_POLYGON_MATCH_MAX_SCORE = 80.0
 
 # register heif/heic support with pillow
 try:
@@ -208,10 +212,8 @@ def _source_polygon_score(tool: Tool, candidate: list[Point], label: str) -> flo
     tool_bounds = _bounds_mm(tool.points)
     candidate_bounds = _bounds_mm(candidate)
     if tool_bounds and candidate_bounds:
-        _, _, tool_max_x, tool_max_y = tool_bounds
-        tool_min_x, tool_min_y, _, _ = tool_bounds
-        _, _, cand_max_x, cand_max_y = candidate_bounds
-        cand_min_x, cand_min_y, _, _ = candidate_bounds
+        tool_min_x, tool_min_y, tool_max_x, tool_max_y = tool_bounds
+        cand_min_x, cand_min_y, cand_max_x, cand_max_y = candidate_bounds
         score += abs((tool_max_x - tool_min_x) - (cand_max_x - cand_min_x))
         score += abs((tool_max_y - tool_min_y) - (cand_max_y - cand_min_y))
     if len(tool.points) == len(candidate):
@@ -243,58 +245,66 @@ def _find_source_polygon(tool: Tool, session: Session) -> Polygon | None:
         if best is None or score < best[0]:
             best = (score, poly)
 
-    return best[1] if best and best[0] < 80 else None
+    return best[1] if best and best[0] < SOURCE_POLYGON_MATCH_MAX_SCORE else None
 
 
-def _tool_image_context(tool: Tool, sessions: SessionStore) -> dict | None:
+def _tool_image_context(tool: Tool, sessions: SessionStore, load_missing_dimensions: bool = True) -> tuple[dict, bool] | tuple[None, bool]:
+    updated = False
     image_path = tool.source_image_path
     width = tool.source_image_width
     height = tool.source_image_height
-    origin_x = tool.source_origin_x_mm
-    origin_y = tool.source_origin_y_mm
-    scale_factor = tool.source_scale_factor
+    transform = tool.source_image_transform if tool.source_image_transform and len(tool.source_image_transform) == 6 else None
 
     if (
-        (not image_path or origin_x is None or origin_y is None or scale_factor is None)
+        (not image_path or transform is None)
         and tool.source_session_id
     ):
         session = sessions.get(tool.source_session_id)
         if session and session.corrected_image_path and session.scale_factor:
             poly = _find_source_polygon(tool, session)
-            transform = _polygon_source_transform(poly, session.scale_factor) if poly else None
-            if transform:
+            source_origin = _polygon_source_transform(poly, session.scale_factor) if poly else None
+            if source_origin:
                 image_path = session.corrected_image_path
-                origin_x, origin_y = transform
-                scale_factor = session.scale_factor
+                if tool.source_image_path != image_path:
+                    tool.source_image_path = image_path
+                    updated = True
+                transform = [
+                    session.scale_factor, 0.0, 0.0, session.scale_factor,
+                    source_origin[0], source_origin[1],
+                ]
+                if tool.source_image_transform != transform:
+                    tool.source_image_transform = transform
+                    updated = True
 
-    if not image_path or origin_x is None or origin_y is None or scale_factor is None:
-        return None
+    if not image_path or transform is None:
+        return None, updated
 
     abs_path = _abs(image_path)
     if not abs_path or not Path(abs_path).exists():
-        return None
+        return None, updated
 
     if width is None or height is None:
+        if not load_missing_dimensions:
+            return None, updated
         try:
             with Image.open(abs_path) as img:
                 width, height = img.size
+            if tool.source_image_width != width or tool.source_image_height != height:
+                tool.source_image_width = width
+                tool.source_image_height = height
+                updated = True
         except Exception:
-            return None
-
-    transform = tool.source_image_transform
-    if transform is None or len(transform) != 6:
-        # baseline identity-orientation matrix derived from saved origin and scale
-        transform = [scale_factor, 0.0, 0.0, scale_factor, origin_x, origin_y]
+            return None, updated
 
     return {
         "image_url": f"/storage/{image_path}",
         "image_width": width,
         "image_height": height,
-        "origin_x_mm": origin_x,
-        "origin_y_mm": origin_y,
-        "scale_factor": scale_factor,
+        "origin_x_mm": transform[4],
+        "origin_y_mm": transform[5],
+        "scale_factor": math.hypot(transform[0], transform[1]),
         "transform": transform,
-    }
+    }, updated
 
 
 def _run_generate(
@@ -801,7 +811,7 @@ async def list_tools(request: Request, user_id: str = Depends(get_user_id)):
         thumb_url = None
         if tool.thumbnail_path and Path(_abs(tool.thumbnail_path)).exists():
             thumb_url = f"/storage/{tool.thumbnail_path}"
-        image_context = _tool_image_context(tool, user_sessions)
+        image_context, _ = _tool_image_context(tool, user_sessions, load_missing_dimensions=False)
         summaries.append(ToolSummary(
             id=tid,
             name=tool.name,
@@ -819,14 +829,18 @@ async def list_tools(request: Request, user_id: str = Depends(get_user_id)):
     return ToolListResponse(tools=summaries)
 
 
-@router.get("/tools/{tool_id}")
+@router.get("/tools/{tool_id}", response_model=ToolDetailResponse)
 async def get_tool(request: Request, tool_id: str, user_id: str = Depends(get_user_id)):
     user_sessions, user_tools, _ = get_stores(user_id)
     tool = user_tools.get(tool_id)
     if not tool:
         raise HTTPException(status_code=404, detail="tool not found")
     data = tool.model_dump()
-    data["image_context"] = _tool_image_context(tool, user_sessions)
+    image_context, updated = _tool_image_context(tool, user_sessions)
+    if updated:
+        user_tools.set(tool_id, tool)
+        data = tool.model_dump()
+    data["image_context"] = image_context
     return data
 
 
@@ -967,9 +981,6 @@ async def save_tools_from_session(request: Request, session_id: str, body: SaveT
             source_image_path=session.corrected_image_path,
             source_image_width=src_img.width if src_img else None,
             source_image_height=src_img.height if src_img else None,
-            source_origin_x_mm=source_transform[0] if source_transform else None,
-            source_origin_y_mm=source_transform[1] if source_transform else None,
-            source_scale_factor=sf,
             source_image_transform=(
                 [sf, 0.0, 0.0, sf, source_transform[0], source_transform[1]]
                 if source_transform else None

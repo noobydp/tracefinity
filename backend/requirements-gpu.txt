@@ -1,0 +1,4 @@
+# Optional NVIDIA CUDA runtime for rembg/ONNX tracers.
+# Install after requirements.txt when GPU tracing is desired:
+#   pip install -r requirements.txt -r requirements-gpu.txt
+onnxruntime-gpu[cuda,cudnn]>=1.23.0

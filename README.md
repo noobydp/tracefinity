@@ -47,6 +47,7 @@ By default, Tracefinity uses [IS-Net](https://github.com/xuebinqin/DIS) for loca
 |-|-|-|
 | `GOOGLE_API_KEY` | | Gemini API key. Uses Gemini instead of local models |
 | `TRACERS` | auto-detected | Comma-separated list of available tracers, e.g. `gemini,birefnet-lite,isnet` |
+| `TRACEFINITY_ONNX_PROVIDER` | `auto` | Local ONNX provider: `auto`, `cuda`, or `cpu` |
 | `GEMINI_IMAGE_MODEL` | `gemini-3.1-flash-image-preview` | Gemini model for mask generation (see below) |
 
 ### From Source
@@ -74,7 +75,7 @@ Tracefinity supports three ways to trace tool outlines from photos. All three pr
 
 ### Local models (default)
 
-When no API key is configured, Tracefinity runs a local salient object detection model. No API key, no network access, no cost. Model weights download automatically on first trace. Three models are available, selectable via the `TRACERS` env var or the UI dropdown:
+When no API key is configured, Tracefinity runs a local salient object detection model. No API key, no network access, no cost. Model weights download automatically on first trace. Three CPU-friendly models are available by default, selectable via the `TRACERS` env var or the UI dropdown:
 
 | Model | Speed (CPU) | Min RAM | Quality | Notes |
 |-|-|-|-|-|
@@ -85,6 +86,18 @@ When no API key is configured, Tracefinity runs a local salient object detection
 Paper corner detection runs [U2-Net Portable](https://github.com/xuebinqin/U-2-Net) alongside the tracer. RAM figures include both models. All models load at startup.
 
 **Minimum RAM: 2GB** (IS-Net). BiRefNet Lite needs **8GB**.
+
+BiRefNet General is available as an opt-in GPU tracer. For NVIDIA GPU tracing from
+source, install the optional GPU requirements after the default backend
+requirements, set `TRACERS=birefnet-general,birefnet-lite,isnet`, and set
+`TRACEFINITY_ONNX_PROVIDER=cuda` to require CUDA:
+
+```bash
+pip install -r backend/requirements.txt -r backend/requirements-gpu.txt
+```
+
+This uses ONNX Runtime GPU for the `rembg` models (`isnet`, `birefnet-lite`,
+`birefnet-general`) and avoids PyTorch CUDA for those tracers.
 
 See [#21](https://github.com/tracefinity/tracefinity/issues/21) for the benchmark that led to this selection.
 

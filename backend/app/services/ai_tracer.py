@@ -59,6 +59,8 @@ Return labels in the same order as the positions listed above."""
 _NEEDS_ALIGNMENT = {"gemini-2.5-flash-image"}
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+PAPER_TRACE_MARGIN_RATIO = 0.12
+PAPER_TRACE_MIN_MARGIN_PX = 64
 
 
 class AITracer:
@@ -193,6 +195,21 @@ class AITracer:
             return None
         return best[1], best[2], best[3], best[4]
 
+    @staticmethod
+    def _expand_paper_rect(
+        rect: tuple[int, int, int, int],
+        image_width: int,
+        image_height: int,
+    ) -> tuple[int, int, int, int]:
+        """expand paper crop so tools hanging over paper edges stay traceable."""
+        x, y, w, h = rect
+        margin = max(PAPER_TRACE_MIN_MARGIN_PX, int(round(max(w, h) * PAPER_TRACE_MARGIN_RATIO)))
+        left = max(0, x - margin)
+        top = max(0, y - margin)
+        right = min(image_width, x + w + margin)
+        bottom = min(image_height, y + h + margin)
+        return left, top, right - left, bottom - top
+
     def _saliency_on_image(self, pil_img):
         """run the configured local model, return foreground mask (fg=255)."""
         backend, remover = self._local_remover
@@ -210,9 +227,10 @@ class AITracer:
     async def _generate_mask_local(self, image_path: str, output_path: str | None = None) -> str | None:
         """generate a foreground mask using a local model (no API key).
 
-        crop to the paper rect before running the model. saliency models pick
-        the most salient object — on the full corrected image that's the bright
-        paper, not the tool. cropped to the paper, the tool becomes salient."""
+        crop to the paper rect plus a margin before running the model. saliency
+        models pick the most salient object -- on the full corrected image
+        that's the bright paper, not the tool. the margin keeps tools hanging
+        over the paper edge in the traceable area."""
         from PIL import Image
 
         label = self._LOCAL_MODEL_LABELS.get(self.local_model_name, self.local_model_name)
@@ -222,8 +240,8 @@ class AITracer:
 
         rect = self._detect_paper_rect(np_bgr)
         if rect is not None:
-            x, y, rw, rh = rect
-            logging.info("cropping to paper rect %dx%d at (%d,%d) before saliency", rw, rh, x, y)
+            x, y, rw, rh = self._expand_paper_rect(rect, np_bgr.shape[1], np_bgr.shape[0])
+            logging.info("cropping to paper rect plus margin %dx%d at (%d,%d) before saliency", rw, rh, x, y)
             cropped = pil_img.crop((x, y, x + rw, y + rh))
             inside = self._saliency_on_image(cropped)
             full = np.zeros((np_bgr.shape[0], np_bgr.shape[1]), dtype=np.uint8)

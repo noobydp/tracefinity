@@ -280,6 +280,110 @@ class SaveToolsResponse(BaseModel):
     tool_ids: list[str]
 
 
+# --- bin projects ---
+
+ProjectStatus = Literal["active", "ready_to_print", "printed", "archived"]
+ProjectHealthSeverity = Literal["warning", "error"]
+ProjectHealthCode = Literal[
+    "missing_tool",
+    "missing_bin",
+    "bin_missing_project_id",
+    "bin_project_mismatch",
+    "outside_tool",
+    "tool_missing_project_id",
+    "tool_extra_project_id",
+]
+
+class BinProject(BaseModel):
+    id: str
+    name: str
+    description: str | None = None
+    status: ProjectStatus = "active"
+    tool_ids: list[str] = []
+    bin_ids: list[str] = []
+    target_grid_x: int | None = None
+    target_grid_y: int | None = None
+    default_bin_config: BinParams | None = None
+    notes: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+class BinProjectDetail(BinProject):
+    placed_tool_ids: list[str] = []
+    unplaced_tool_ids: list[str] = []
+
+
+class BinProjectSummary(BaseModel):
+    id: str
+    name: str
+    description: str | None = None
+    status: ProjectStatus = "active"
+    tool_count: int = 0
+    bin_count: int = 0
+    placed_count: int = 0
+    unplaced_count: int = 0
+    target_grid_x: int | None = None
+    target_grid_y: int | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class BinProjectListResponse(BaseModel):
+    projects: list[BinProjectSummary]
+
+
+class BinProjectCreateRequest(BaseModel):
+    name: str
+    description: str | None = None
+    status: ProjectStatus = "active"
+    target_grid_x: int | None = None
+    target_grid_y: int | None = None
+    default_bin_config: BinParams | None = None
+    notes: str | None = None
+    tool_ids: list[str] = []
+
+
+class BinProjectUpdateRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    status: ProjectStatus | None = None
+    target_grid_x: int | None = None
+    target_grid_y: int | None = None
+    default_bin_config: BinParams | None = None
+    notes: str | None = None
+
+
+class BinProjectToolsRequest(BaseModel):
+    tool_ids: list[str]
+
+
+class BinProjectCreateBinRequest(BaseModel):
+    name: str | None = None
+    tool_ids: list[str] | None = None
+
+
+class BinProjectBinsRequest(BaseModel):
+    bin_ids: list[str]
+    import_tools: bool = False
+    allow_reassign: bool = False
+
+
+class ProjectHealthIssue(BaseModel):
+    code: ProjectHealthCode
+    severity: ProjectHealthSeverity
+    message: str
+    tool_id: str | None = None
+    bin_id: str | None = None
+    other_project_id: str | None = None
+    repairable: bool = False
+
+
+class ProjectHealthResponse(BaseModel):
+    issues: list[ProjectHealthIssue]
+    repairable_count: int = 0
+    manual_count: int = 0
+
+
 # --- bins ---
 
 class PlacedTool(BaseModel):
@@ -318,6 +422,7 @@ class BinSummary(BaseModel):
     name: str | None
     project_id: str | None = None
     created_at: str | None
+    tool_ids: list[str] = []
     tool_count: int
     has_stl: bool
     grid_x: int = 2

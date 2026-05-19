@@ -10,6 +10,10 @@ import type {
   SessionSummary,
   Tool,
   ToolSummary,
+  BinProject,
+  BinProjectSummary,
+  ProjectHealthResponse,
+  ProjectStatus,
   BinData,
   BinSummary,
   PlacedTool,
@@ -224,6 +228,93 @@ export async function saveToolsFromSession(sessionId: string, polygonIds?: strin
     body: polygonIds ? JSON.stringify({ polygon_ids: polygonIds }) : undefined,
   })
   return res.tool_ids
+}
+
+// --- projects ---
+
+export async function listProjects(): Promise<BinProjectSummary[]> {
+  const res = await fetchApi<{ projects: BinProjectSummary[] }>('/api/bin-projects')
+  return res.projects
+}
+
+export async function createProject(opts: {
+  name: string
+  description?: string | null
+  status?: ProjectStatus
+  tool_ids?: string[]
+}): Promise<BinProject> {
+  return fetchApi('/api/bin-projects', {
+    method: 'POST',
+    body: JSON.stringify(opts),
+  })
+}
+
+export async function getProject(projectId: string): Promise<BinProject> {
+  return fetchApi(`/api/bin-projects/${projectId}`)
+}
+
+export async function updateProject(
+  projectId: string,
+  updates: {
+    name?: string
+    description?: string | null
+    status?: ProjectStatus
+    notes?: string | null
+    target_grid_x?: number | null
+    target_grid_y?: number | null
+  }
+): Promise<BinProject> {
+  return fetchApi(`/api/bin-projects/${projectId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(updates),
+  })
+}
+
+export async function deleteProject(projectId: string): Promise<void> {
+  await fetchApi(`/api/bin-projects/${projectId}`, { method: 'DELETE' })
+}
+
+export async function addToolsToProject(projectId: string, toolIds: string[]): Promise<BinProject> {
+  return fetchApi(`/api/bin-projects/${projectId}/tools`, {
+    method: 'POST',
+    body: JSON.stringify({ tool_ids: toolIds }),
+  })
+}
+
+export async function removeToolFromProject(projectId: string, toolId: string): Promise<BinProject> {
+  return fetchApi(`/api/bin-projects/${projectId}/tools/${toolId}`, { method: 'DELETE' })
+}
+
+export async function getProjectHealth(projectId: string): Promise<ProjectHealthResponse> {
+  return fetchApi(`/api/bin-projects/${projectId}/health`)
+}
+
+export async function repairProject(projectId: string): Promise<ProjectHealthResponse> {
+  return fetchApi(`/api/bin-projects/${projectId}/repair`, { method: 'POST' })
+}
+
+export async function addBinsToProject(
+  projectId: string,
+  opts: { bin_ids: string[]; import_tools?: boolean; allow_reassign?: boolean }
+): Promise<BinProject> {
+  return fetchApi(`/api/bin-projects/${projectId}/bins`, {
+    method: 'POST',
+    body: JSON.stringify(opts),
+  })
+}
+
+export async function detachBinFromProject(projectId: string, binId: string): Promise<BinProject> {
+  return fetchApi(`/api/bin-projects/${projectId}/bins/${binId}`, { method: 'DELETE' })
+}
+
+export async function createProjectBin(
+  projectId: string,
+  opts: { name?: string | null; tool_ids?: string[] | null } = {}
+): Promise<BinData> {
+  return fetchApi(`/api/bin-projects/${projectId}/create-bin`, {
+    method: 'POST',
+    body: JSON.stringify(opts),
+  })
 }
 
 // --- bins ---

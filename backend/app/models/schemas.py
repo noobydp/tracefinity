@@ -62,9 +62,14 @@ class TraceRequest(BaseModel):
     tracer: str | None = None
 
 
+ToolLabelStatus = Literal["idle", "pending", "complete", "failed"]
+
+
 class TraceResponse(BaseModel):
     polygons: list[Polygon]
     mask_url: str | None = None
+    labels_pending: bool = False
+    tool_label_status: ToolLabelStatus = "idle"
 
 
 class PolygonsRequest(BaseModel):
@@ -172,6 +177,8 @@ class Session(BaseModel):
     paper_size: Literal["a4", "letter"] | None = None
     scale_factor: float | None = None
     polygons: list[Polygon] | None = None
+    tool_label_status: ToolLabelStatus = "idle"
+    tool_label_error: str | None = None
     stl_path: str | None = None
     layout: Layout | None = None
 

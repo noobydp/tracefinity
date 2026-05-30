@@ -8,6 +8,9 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 _DLL_DIRS_ADDED = False
 _DLL_DIR_HANDLES = []
+_DEFAULT_GPU_MEM_LIMIT_MB = 10240
+_DEFAULT_ARENA_EXTEND_STRATEGY = "kSameAsRequested"
+_ARENA_EXTEND_STRATEGIES = {"kNextPowerOfTwo", "kSameAsRequested"}
 
 
 def _add_nvidia_dll_dirs():
@@ -68,7 +71,12 @@ def get_onnx_providers(require_gpu: bool = False):
     - cuda: require CUDAExecutionProvider
     - cpu: CPUExecutionProvider only
     """
-    requested = os.getenv("TRACEFINITY_ONNX_PROVIDER", "auto").strip().lower()
+    from app.config import settings
+
+    requested = os.getenv(
+        "TRACEFINITY_ONNX_PROVIDER",
+        settings.tracefinity_onnx_provider,
+    ).strip().lower()
     if requested not in {"auto", "cuda", "cpu"}:
         raise ValueError("TRACEFINITY_ONNX_PROVIDER must be one of: auto, cuda, cpu")
 
@@ -92,17 +100,23 @@ def get_onnx_providers(require_gpu: bool = False):
     _preload_onnxruntime_cuda_dlls()
     available = set(ort.get_available_providers())
     if "CUDAExecutionProvider" in available:
-        logger.info("using ONNX Runtime CUDAExecutionProvider for local models")
+        provider_options = {
+            "device_id": 0,
+            "cudnn_conv_algo_search": "DEFAULT",
+            "cudnn_conv_use_max_workspace": "1",
+            "do_copy_in_default_stream": "1",
+            "arena_extend_strategy": _onnx_arena_extend_strategy(),
+        }
+        gpu_mem_limit = _onnx_gpu_mem_limit_bytes()
+        if gpu_mem_limit is not None:
+            provider_options["gpu_mem_limit"] = str(gpu_mem_limit)
+
+        logger.info(
+            "using ONNX Runtime CUDAExecutionProvider for local models with options: %s",
+            provider_options,
+        )
         return [
-            (
-                "CUDAExecutionProvider",
-                {
-                    "device_id": 0,
-                    "cudnn_conv_algo_search": "DEFAULT",
-                    "cudnn_conv_use_max_workspace": "1",
-                    "do_copy_in_default_stream": "1",
-                },
-            ),
+            ("CUDAExecutionProvider", provider_options),
             "CPUExecutionProvider",
         ]
 
@@ -114,3 +128,33 @@ def get_onnx_providers(require_gpu: bool = False):
 
     logger.info("using ONNX Runtime CPUExecutionProvider for local models")
     return ["CPUExecutionProvider"]
+
+
+def _onnx_gpu_mem_limit_bytes() -> int | None:
+    from app.config import settings
+
+    raw_mb = os.getenv("TRACEFINITY_ONNX_GPU_MEM_LIMIT_MB")
+    mb = int(raw_mb) if raw_mb is not None and raw_mb.strip() else settings.tracefinity_onnx_gpu_mem_limit_mb
+    if mb is None:
+        mb = _DEFAULT_GPU_MEM_LIMIT_MB
+
+    if mb < 0:
+        raise ValueError("TRACEFINITY_ONNX_GPU_MEM_LIMIT_MB must be >= 0")
+    if mb == 0:
+        return None
+    return mb * 1024 * 1024
+
+
+def _onnx_arena_extend_strategy() -> str:
+    from app.config import settings
+
+    strategy = (
+        os.getenv("TRACEFINITY_ONNX_ARENA_EXTEND_STRATEGY")
+        or settings.tracefinity_onnx_arena_extend_strategy
+        or _DEFAULT_ARENA_EXTEND_STRATEGY
+    )
+    strategy = strategy.strip() or _DEFAULT_ARENA_EXTEND_STRATEGY
+    if strategy not in _ARENA_EXTEND_STRATEGIES:
+        allowed = ", ".join(sorted(_ARENA_EXTEND_STRATEGIES))
+        raise ValueError(f"TRACEFINITY_ONNX_ARENA_EXTEND_STRATEGY must be one of: {allowed}")
+    return strategy

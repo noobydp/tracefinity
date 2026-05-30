@@ -20,6 +20,17 @@ class Settings(BaseSettings):
     proxy_secret: Optional[str] = None
     cors_origins: list[str] = ["http://localhost:3000", "http://localhost:4001"]
     tracers: Optional[str] = None
+    tracefinity_onnx_provider: str = "auto"
+    tracefinity_onnx_gpu_mem_limit_mb: int = 10240
+    tracefinity_onnx_arena_extend_strategy: str = "kSameAsRequested"
+    tool_label_provider: str = "none"
+    tool_label_model: str = "qwen3-vl:2b"
+    tool_label_ollama_url: str = "http://localhost:11434"
+    tool_label_timeout_seconds: float = 30.0
+    tool_label_max_crop_px: int = 512
+    tool_label_context_tokens: int = 4096
+    tool_label_max_tokens: int = 256
+    tool_label_attempts: int = 2
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

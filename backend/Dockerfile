@@ -17,4 +17,7 @@ COPY . .
 
 EXPOSE 8000
 
+ENV TRACEFINITY_ONNX_GPU_MEM_LIMIT_MB=10240
+ENV TRACEFINITY_ONNX_ARENA_EXTEND_STRATEGY=kSameAsRequested
+
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

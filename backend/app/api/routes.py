@@ -9,7 +9,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, UploadFile, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, UploadFile, HTTPException
 from fastapi.responses import FileResponse, Response
 from starlette.requests import Request
 from PIL import Image
@@ -86,6 +86,7 @@ from app.services.project_service import (
     remove_project_from_tools,
     repair_project_links,
 )
+from app.services.tool_labeler import ToolLabeler, fallback_label, is_fallback_label
 router = APIRouter()
 
 # Heuristic mismatch score combining a label penalty with bbox and point deltas measured in mm.
@@ -187,6 +188,110 @@ def _get_tracer(tracer_id: str | None = None) -> AITracer:
                 local_model_name=tid,
             )
     return _tracers[tid]
+
+
+def _schedule_tool_labeling(
+    background_tasks: BackgroundTasks,
+    user_id: str,
+    session_id: str,
+    image_path: str | None,
+    polygons: list[Polygon],
+) -> bool:
+    if not image_path or not polygons:
+        return False
+
+    for index, poly in enumerate(polygons):
+        if not poly.label:
+            poly.label = fallback_label(index)
+
+    labeler = ToolLabeler()
+    if not labeler.enabled():
+        return False
+
+    polygon_ids = [poly.id for poly in polygons]
+    background_tasks.add_task(
+        _label_session_polygons_background,
+        user_id,
+        session_id,
+        image_path,
+        polygon_ids,
+    )
+    logger.info("scheduled background tool labeling session=%s polygons=%d", session_id, len(polygon_ids))
+    return True
+
+
+async def _label_session_polygons_background(
+    user_id: str,
+    session_id: str,
+    image_path: str,
+    polygon_ids: list[str],
+) -> None:
+    try:
+        user_sessions, _, _ = get_stores(user_id)
+        session = user_sessions.get(session_id)
+        if not session or not session.polygons:
+            return
+        if session.tool_label_status != "pending":
+            logger.info("skipping background tool labeling session=%s; no longer pending", session_id)
+            return
+
+        id_set = set(polygon_ids)
+        candidates = [
+            poly.model_copy(deep=True)
+            for poly in session.polygons
+            if poly.id in id_set
+        ]
+        if not candidates:
+            return
+
+        labeled = await ToolLabeler().label_polygons(image_path, candidates)
+        fresh = user_sessions.get(session_id)
+        if not fresh or not fresh.polygons:
+            return
+        if fresh.tool_label_status != "pending":
+            logger.info("ignoring background tool labels session=%s; no longer pending", session_id)
+            return
+
+        labels_by_id = {
+            poly.id: poly.label
+            for poly in labeled
+            if poly.label and not is_fallback_label(poly.label)
+        }
+        if not labels_by_id:
+            fresh.tool_label_status = "failed"
+            fresh.tool_label_error = "No usable tool names returned"
+            user_sessions.set(session_id, fresh)
+            logger.warning("background tool labeling failed session=%s: no usable labels", session_id)
+            return
+
+        changed = False
+        for poly in fresh.polygons:
+            label = labels_by_id.get(poly.id)
+            if label and is_fallback_label(poly.label):
+                poly.label = label
+                changed = True
+
+        if changed:
+            fresh.tool_label_status = "complete"
+            fresh.tool_label_error = None
+            user_sessions.set(session_id, fresh)
+            logger.info("background tool labeling updated session=%s labels=%d", session_id, len(labels_by_id))
+        else:
+            fresh.tool_label_status = "complete"
+            fresh.tool_label_error = None
+            user_sessions.set(session_id, fresh)
+    except Exception:
+        logger.exception("background tool labeling failed session=%s", session_id)
+        try:
+            user_sessions, _, _ = get_stores(user_id)
+            failed = user_sessions.get(session_id)
+            if failed and failed.tool_label_status == "pending":
+                failed.tool_label_status = "failed"
+                failed.tool_label_error = "Tool naming failed"
+                user_sessions.set(session_id, failed)
+        except Exception:
+            logger.exception("failed to store tool labeling failure session=%s", session_id)
+
 
 polygon_scaler = PolygonScaler()
 stl_generator = ManifoldSTLGenerator()
@@ -605,7 +710,13 @@ async def get_available_keys(request: Request):
 
 
 @router.post("/sessions/{session_id}/trace", response_model=TraceResponse)
-async def trace_tools(request: Request, session_id: str, req: TraceRequest, user_id: str = Depends(get_user_id)):
+async def trace_tools(
+    request: Request,
+    session_id: str,
+    req: TraceRequest,
+    background_tasks: BackgroundTasks,
+    user_id: str = Depends(get_user_id),
+):
     user_sessions, _, _ = get_stores(user_id)
     session = user_sessions.get(session_id)
     if not session or not session.corrected_image_path:
@@ -623,9 +734,10 @@ async def trace_tools(request: Request, session_id: str, req: TraceRequest, user
     mask_output_path = str(up / "processed" / f"{session_id}_mask.png")
 
     tracer = _get_tracer(tracer_id)
+    corrected_image_path = _abs(session.corrected_image_path)
     try:
         polygons, mask_path = await tracer.trace_tools(
-            _abs(session.corrected_image_path),
+            corrected_image_path,
             api_key,
             mask_output_path,
         )
@@ -646,17 +758,37 @@ async def trace_tools(request: Request, session_id: str, req: TraceRequest, user
 
     session.polygons = polygons
     session.mask_image_path = _rel(mask_path, up) if mask_path else None
+    labels_pending = _schedule_tool_labeling(
+        background_tasks,
+        user_id,
+        session_id,
+        corrected_image_path,
+        polygons,
+    )
+    session.tool_label_status = "pending" if labels_pending else "idle"
+    session.tool_label_error = None
     user_sessions.set(session_id, session)
 
     mask_url = None
     if mask_path:
         mask_url = f"/storage/{user_id}/processed/{session_id}_mask.png"
 
-    return TraceResponse(polygons=polygons, mask_url=mask_url)
+    return TraceResponse(
+        polygons=polygons,
+        mask_url=mask_url,
+        labels_pending=labels_pending,
+        tool_label_status=session.tool_label_status,
+    )
 
 
 @router.post("/sessions/{session_id}/trace-mask", response_model=TraceResponse)
-async def trace_from_mask(request: Request, session_id: str, mask: UploadFile, user_id: str = Depends(get_user_id)):
+async def trace_from_mask(
+    request: Request,
+    session_id: str,
+    mask: UploadFile,
+    background_tasks: BackgroundTasks,
+    user_id: str = Depends(get_user_id),
+):
     """trace contours from a user-uploaded mask image"""
     user_sessions, _, _ = get_stores(user_id)
     session = user_sessions.get(session_id)
@@ -676,7 +808,8 @@ async def trace_from_mask(request: Request, session_id: str, mask: UploadFile, u
     mask_path = up / "processed" / f"{session_id}_mask.png"
     mask_path.write_bytes(content)
 
-    contours = _get_tracer()._trace_mask(str(mask_path), _abs(session.corrected_image_path))
+    corrected_image_path = _abs(session.corrected_image_path)
+    contours = _get_tracer()._trace_mask(str(mask_path), corrected_image_path)
 
     if not contours:
         raise HTTPException(status_code=400, detail="no tool outlines found in mask")
@@ -692,11 +825,22 @@ async def trace_from_mask(request: Request, session_id: str, mask: UploadFile, u
 
     session.polygons = polygons
     session.mask_image_path = _rel(mask_path, up)
+    labels_pending = _schedule_tool_labeling(
+        background_tasks,
+        user_id,
+        session_id,
+        corrected_image_path,
+        polygons,
+    )
+    session.tool_label_status = "pending" if labels_pending else "idle"
+    session.tool_label_error = None
     user_sessions.set(session_id, session)
 
     return TraceResponse(
         polygons=polygons,
-        mask_url=f"/storage/{user_id}/processed/{session_id}_mask.png"
+        mask_url=f"/storage/{user_id}/processed/{session_id}_mask.png",
+        labels_pending=labels_pending,
+        tool_label_status=session.tool_label_status,
     )
 
 
@@ -1062,6 +1206,11 @@ async def save_tools_from_session(request: Request, session_id: str, body: SaveT
     session = user_sessions.get(session_id)
     if not session or not session.scale_factor or not session.polygons:
         raise HTTPException(status_code=400, detail="session has no traced polygons")
+
+    if session.tool_label_status == "pending":
+        session.tool_label_status = "idle"
+        session.tool_label_error = None
+        user_sessions.set(session_id, session)
 
     sf = session.scale_factor
     tool_ids = []

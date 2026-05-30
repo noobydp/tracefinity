@@ -121,5 +121,7 @@ EXPOSE 3000
 
 ENV GEMINI_IMAGE_MODEL="gemini-3-pro-image-preview"
 ENV STORAGE_PATH=/app/storage
+ENV TRACEFINITY_ONNX_GPU_MEM_LIMIT_MB=10240
+ENV TRACEFINITY_ONNX_ARENA_EXTEND_STRATEGY=kSameAsRequested
 
 CMD ["supervisord", "-c", "/etc/supervisor/conf.d/tracefinity.conf"]

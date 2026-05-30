@@ -4,6 +4,7 @@
 - Image upload with model-assisted paper corner detection (U2-Net Portable + OpenCV)
 - Perspective correction using user-adjusted corners (portrait + landscape)
 - Tool tracing via local models (BiRefNet Lite, IS-Net, InSPyReNet) or Gemini API
+- Optional automatic tool naming from traced polygon crops through Ollama
 - Manual mask upload as alternative
 - Session persistence (JSON files)
 - Tool library, bin, and bin project persistence (JSON files)
@@ -30,7 +31,8 @@ tracefinity/
 │   │   ├── constants.py             # GF_GRID etc.
 │   │   ├── api/routes.py
 │   │   └── services/
-│   │       ├── ai_tracer.py              # Gemini mask + contour tracing
+│   │       ├── ai_tracer.py              # Gemini/local mask + contour tracing
+│   │       ├── tool_labeler.py           # optional Ollama naming for traced polygons
 │   │       ├── image_processor.py         # paper detection + perspective
 │   │       ├── polygon_scaler.py          # px-to-mm, clearance, smoothing
 │   │       ├── stl_generator_manifold.py  # gridfinity STL + bin splitting
@@ -90,6 +92,8 @@ tracefinity/
 PlacedTools sync with their library source on bin load (`GET /bins/{id}`) via `bin_service.sync_placed_tools()`. Edits to a tool's points, finger holes, or name propagate to all bins that use it. The position offset is preserved.
 
 Projects do not own tools or bins. Tools keep `project_ids`, bins keep `project_id`, and project health/repair endpoints keep those links consistent when records are renamed, deleted, or manually edited.
+
+When `TOOL_LABEL_PROVIDER` is enabled, `tool_labeler.py` runs as a background task after contour extraction for both AI tracing and manual mask upload. It crops each polygon from the corrected source image, masks everything outside the contour to white, builds one numbered contact sheet, asks the configured provider for short JSON tool names, validates them, and writes results back to `Polygon.label` only while the session is still waiting for labels and only for polygons that still have generic fallback labels. Saving tools cancels pending label application so late results do not rename a trace after the user accepted the visible names. Supported providers are `ollama`, `gemini`/`google`, `openrouter`, and `hosted` (Gemini first, OpenRouter fallback). Failures are non-fatal and keep the generic fallback labels.
 
 ## Backend route helpers
 

@@ -49,7 +49,17 @@ By default, Tracefinity uses [IS-Net](https://github.com/xuebinqin/DIS) for loca
 | `GOOGLE_API_KEY` | | Gemini API key. Uses Gemini instead of local models |
 | `TRACERS` | auto-detected | Comma-separated list of available tracers, e.g. `gemini,birefnet-lite,isnet` |
 | `TRACEFINITY_ONNX_PROVIDER` | `auto` | Local ONNX provider: `auto`, `cuda`, or `cpu` |
+| `TRACEFINITY_ONNX_GPU_MEM_LIMIT_MB` | `10240` | CUDA memory cap for ONNX Runtime local tracers. Set `0` to disable |
+| `TRACEFINITY_ONNX_ARENA_EXTEND_STRATEGY` | `kSameAsRequested` | ONNX CUDA arena growth strategy. Use `kNextPowerOfTwo` for ONNX Runtime's default growth |
 | `GEMINI_IMAGE_MODEL` | `gemini-3.1-flash-image-preview` | Gemini model for mask generation (see below) |
+| `TOOL_LABEL_PROVIDER` | `none` | Optional automatic tool naming provider. Use `ollama` locally, `hosted` to prefer Gemini/OpenRouter, or `gemini`/`openrouter` explicitly |
+| `TOOL_LABEL_MODEL` | `qwen3-vl:2b` | Ollama vision model used when local tool naming is enabled |
+| `TOOL_LABEL_OLLAMA_URL` | `http://localhost:11434` | Ollama server URL for local tool naming |
+| `TOOL_LABEL_TIMEOUT_SECONDS` | `30` | Per-request timeout for background naming |
+| `TOOL_LABEL_MAX_CROP_PX` | `512` | Maximum long edge for each isolated tool crop in the naming contact sheet |
+| `TOOL_LABEL_CONTEXT_TOKENS` | `4096` | Ollama context window for naming. Keeps small VLMs from allocating huge KV cache |
+| `TOOL_LABEL_MAX_TOKENS` | `256` | Maximum generated tokens for tool-name JSON |
+| `TOOL_LABEL_ATTEMPTS` | `2` | Number of attempts before keeping generic fallback names |
 
 ### From Source
 
@@ -100,7 +110,31 @@ pip install -r backend/requirements.txt -r backend/requirements-gpu.txt
 This uses ONNX Runtime GPU for the `rembg` models (`isnet`, `birefnet-lite`,
 `birefnet-general`) and avoids PyTorch CUDA for those tracers.
 
+GPU tracing caps the ONNX Runtime CUDA arena at `10240` MB by default and uses
+`kSameAsRequested` arena growth to avoid high-water VRAM growth after repeated
+BiRefNet General inference. Set `TRACEFINITY_ONNX_GPU_MEM_LIMIT_MB=0` to restore
+uncapped ONNX Runtime behavior.
+
 See [#21](https://github.com/tracefinity/tracefinity/issues/21) for the benchmark that led to this selection.
+
+### Automatic tool names
+
+Tracefinity can optionally name traced polygons before you save them to the tool library. This keeps the trace page, selection list, and saved tool names in sync through the existing polygon label.
+
+Naming runs in the background after tracing, so the trace page returns immediately with `tool 1`, `tool 2`, etc. The UI updates labels when the background result lands and only replaces still-generic labels.
+
+If you save tools before naming finishes, Tracefinity keeps the labels that were visible when you saved and ignores late naming results for that trace.
+
+Local naming uses Ollama and sends one numbered contact sheet per trace to a vision model. It is disabled by default and falls back to generic names whenever Ollama is unavailable or the returned name is not usable.
+
+```bash
+ollama pull qwen3-vl:2b
+TOOL_LABEL_PROVIDER=ollama
+TOOL_LABEL_MODEL=qwen3-vl:2b
+TOOL_LABEL_OLLAMA_URL=http://localhost:11434
+```
+
+For a hosted quality path, set `TOOL_LABEL_PROVIDER=hosted` with `GOOGLE_API_KEY` or `OPENROUTER_API_KEY`. `hosted` prefers Gemini when both keys are present; set `TOOL_LABEL_PROVIDER=openrouter` to force OpenRouter.
 
 ### Gemini API
 

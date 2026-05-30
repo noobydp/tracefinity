@@ -11,7 +11,7 @@ import { Alert } from '@/components/Alert'
 import { getSession, setCorners, traceTools, updatePolygons, updateSession, getImageUrl, getAvailableKeys, traceFromMask, saveToolsFromSession } from '@/lib/api'
 import { CornersHint, TraceHint, EditHint } from '@/components/OnboardingIllustrations'
 import { StepBar } from '@/components/StepBar'
-import type { Point, Polygon, Session } from '@/types'
+import type { Point, Polygon, Session, ToolLabelStatus } from '@/types'
 
 type Step = 'corners' | 'trace' | 'edit'
 
@@ -29,6 +29,10 @@ const TRACE_STEPS = [
   'Tracing contours...',
   'Identifying tools...',
 ]
+
+function hasGenericToolLabel(label: string) {
+  return /^tool\s+\d+$/i.test(label.trim())
+}
 
 export default function TracePage() {
   const router = useRouter()
@@ -62,11 +66,13 @@ export default function TracePage() {
   const [copied, setCopied] = useState(false)
   const [showPrompt, setShowPrompt] = useState(false)
   const [traceStatus, setTraceStatus] = useState<string | null>(null)
+  const [toolLabelStatus, setToolLabelStatus] = useState<ToolLabelStatus>('idle')
   const [saving, setSaving] = useState(false)
   const [includedPolygons, setIncludedPolygons] = useState<Set<string>>(new Set())
   const [hoveredPolygon, setHoveredPolygon] = useState<string | null>(null)
   const maskInputRef = useRef<HTMLInputElement>(null)
   const statusInterval = useRef<NodeJS.Timeout | null>(null)
+  const labelPollRun = useRef(0)
 
   useEffect(() => {
     if (!methodOpen) return
@@ -85,6 +91,7 @@ export default function TracePage() {
           getAvailableKeys(),
         ])
         setSession(s)
+        setToolLabelStatus(s.tool_label_status || 'idle')
         setHasEnvKey(keys.google)
         setProviderLabel(keys.provider_label)
         setProviderType(keys.provider)
@@ -108,6 +115,9 @@ export default function TracePage() {
         if (s.polygons && s.polygons.length > 0) {
           setPolygons(s.polygons)
           setStep('edit')
+          if (s.tool_label_status === 'pending') {
+            void pollLabelUpdates(s.polygons, true)
+          }
         } else if (s.corrected_image_path) {
           setStep('trace')
         }
@@ -130,6 +140,49 @@ export default function TracePage() {
   }, [session, step, correctedImageUrl, sessionId])
 
   const singleTracer = tracers.length <= 1
+
+  const pollLabelUpdates = useCallback(async (initialPolygons: Polygon[], labelsPending?: boolean) => {
+    if (!labelsPending || initialPolygons.length === 0) return
+
+    setToolLabelStatus('pending')
+    const runId = ++labelPollRun.current
+    const initialIds = new Set(initialPolygons.map(p => p.id))
+
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 1500))
+      if (labelPollRun.current !== runId) return
+
+      try {
+        const latest = await getSession(sessionId)
+        if (labelPollRun.current !== runId) return
+        const latestStatus = latest.tool_label_status || 'idle'
+        setSession(latest)
+        setToolLabelStatus(latestStatus)
+
+        const freshPolygons = latest.polygons || []
+        const byId = new Map(freshPolygons.map(p => [p.id, p]))
+        setPolygons(current => current.map(poly => {
+          const fresh = byId.get(poly.id)
+          if (!fresh || fresh.label === poly.label) return poly
+          if (!hasGenericToolLabel(poly.label) || hasGenericToolLabel(fresh.label)) return poly
+          return { ...poly, label: fresh.label }
+        }))
+
+        if (latestStatus !== 'pending') return
+
+        const stillPending = freshPolygons.some(poly => (
+          initialIds.has(poly.id) && hasGenericToolLabel(poly.label)
+        ))
+        if (!stillPending) {
+          setToolLabelStatus('complete')
+          return
+        }
+      } catch {
+        // Non-fatal; the trace result is already usable with generic names.
+      }
+    }
+    setToolLabelStatus('failed')
+  }, [sessionId])
 
   async function handleCornersSubmit() {
     if (corners.length !== 4) return
@@ -159,6 +212,8 @@ export default function TracePage() {
             tid,
           )
           setPolygons(traceResult.polygons)
+          setToolLabelStatus(traceResult.tool_label_status || (traceResult.labels_pending ? 'pending' : 'idle'))
+          void pollLabelUpdates(traceResult.polygons, traceResult.labels_pending)
           if (traceResult.mask_url) {
             setMaskUrl(traceResult.mask_url)
             setMaskVersion(v => v + 1)
@@ -208,6 +263,8 @@ export default function TracePage() {
         tid || undefined,
       )
       setPolygons(result.polygons)
+      setToolLabelStatus(result.tool_label_status || (result.labels_pending ? 'pending' : 'idle'))
+      void pollLabelUpdates(result.polygons, result.labels_pending)
       if (result.mask_url) {
         setMaskUrl(result.mask_url)
         setMaskVersion((v) => v + 1)
@@ -232,6 +289,8 @@ export default function TracePage() {
     try {
       const result = await traceFromMask(sessionId, file)
       setPolygons(result.polygons)
+      setToolLabelStatus(result.tool_label_status || (result.labels_pending ? 'pending' : 'idle'))
+      void pollLabelUpdates(result.polygons, result.labels_pending)
       if (result.mask_url) {
         setMaskUrl(result.mask_url)
         setMaskVersion((v) => v + 1)
@@ -285,6 +344,7 @@ export default function TracePage() {
         clearInterval(statusInterval.current)
         statusInterval.current = null
       }
+      labelPollRun.current += 1
     }
   }, [])
 
@@ -535,6 +595,19 @@ export default function TracePage() {
                     ? 'Click outlines to select which tools to save.'
                     : `${includedPolygons.size} of ${polygons.length} selected. Click to add or remove.`}
               </p>
+
+              {toolLabelStatus === 'pending' && (
+                <div className="flex items-center gap-2 text-xs text-text-muted">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-500" />
+                  <span>Naming tools...</span>
+                </div>
+              )}
+
+              {toolLabelStatus === 'failed' && (
+                <div className="text-xs text-amber-500">
+                  Tool names unavailable. Generic names are safe to edit.
+                </div>
+              )}
 
               {polygons.length > 0 && (
                 <div className="text-xs space-y-0.5">

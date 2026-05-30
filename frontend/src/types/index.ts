@@ -53,9 +53,13 @@ export interface Session {
   paper_size: 'a4' | 'letter' | null
   scale_factor: number | null
   polygons: Polygon[] | null
+  tool_label_status?: ToolLabelStatus
+  tool_label_error?: string | null
   stl_path: string | null
   layout: Layout | null
 }
+
+export type ToolLabelStatus = 'idle' | 'pending' | 'complete' | 'failed'
 
 export interface SessionSummary {
   id: string
@@ -82,6 +86,8 @@ export interface CornersResponse {
 export interface TraceResponse {
   polygons: Polygon[]
   mask_url: string | null
+  labels_pending?: boolean
+  tool_label_status?: ToolLabelStatus
 }
 
 export interface GenerateResponse {

@@ -18,8 +18,9 @@
 3. Upload and adjust paper corners for scale calibration
 4. AI traces tool outlines automatically
 5. Save traced tools to your library
-6. Create bins, add tools from the library, arrange the layout
-7. Download STL/3MF for 3D printing
+6. Group tools into projects when planning a drawer or workspace
+7. Create bins from project tools, arrange the layout
+8. Download STL/3MF for 3D printing
 
 | Dashboard | Tool Editor | Bin Editor |
 |-|-|-|
@@ -75,23 +76,29 @@ Tracefinity supports three ways to trace tool outlines from photos. All three pr
 
 ### Local models (default)
 
-When no API key is configured, Tracefinity runs a local salient object detection model. No API key, no network access, no cost. Model weights download automatically on first trace. Three models are available, selectable via the `TRACERS` env var or the UI dropdown:
+When no API key is configured, Tracefinity runs a local salient object detection model. No API key, no network access, no cost. Model weights download automatically on first trace. Three CPU-friendly models are available by default, selectable via the `TRACERS` env var or the UI dropdown:
 
 | Model | Speed (CPU) | Min RAM | Quality | Notes |
 |-|-|-|-|-|
 | [IS-Net](https://github.com/xuebinqin/DIS) (default) | ~0.8s | 2GB | Good | Fastest, lowest memory |
 | [BiRefNet Lite](https://github.com/ZhengPeng7/BiRefNet) | ~3.6s | 8GB | Best | Handles reflections and shiny surfaces well |
-| [BiRefNet General](https://github.com/ZhengPeng7/BiRefNet) | GPU recommended | 8GB+ | Best | Full general BiRefNet model for higher-quality masks |
 | [InSPyReNet](https://github.com/plemeri/InSPyReNet) | ~2.8s | 6GB | Good | Apple Silicon (MPS) support |
 
 Paper corner detection runs [U2-Net Portable](https://github.com/xuebinqin/U-2-Net) alongside the tracer. RAM figures include both models. All models load at startup.
 
 **Minimum RAM: 2GB** (IS-Net). BiRefNet Lite needs **8GB**.
 
-For NVIDIA GPU tracing from source, install `backend/requirements.txt` and set
-`TRACEFINITY_ONNX_PROVIDER=cuda` to require CUDA. This uses ONNX Runtime GPU for
-the `rembg` models (`isnet`, `birefnet-lite`, `birefnet-general`)
-and avoids PyTorch CUDA for those tracers.
+BiRefNet General is available as an opt-in GPU tracer. For NVIDIA GPU tracing from
+source, install the optional GPU requirements after the default backend
+requirements, set `TRACERS=birefnet-general,birefnet-lite,isnet`, and set
+`TRACEFINITY_ONNX_PROVIDER=cuda` to require CUDA:
+
+```bash
+pip install -r backend/requirements.txt -r backend/requirements-gpu.txt
+```
+
+This uses ONNX Runtime GPU for the `rembg` models (`isnet`, `birefnet-lite`,
+`birefnet-general`) and avoids PyTorch CUDA for those tracers.
 
 See [#21](https://github.com/tracefinity/tracefinity/issues/21) for the benchmark that led to this selection.
 
@@ -121,6 +128,7 @@ No API key and prefer not to use the local model? Upload a mask manually:
 - **Manual mask upload** -- Use the Gemini web interface without an API key
 - **Selective saving** -- Choose which traced outlines to keep before saving to your library
 - **Tool library** -- Save traced tools and reuse them across multiple bins
+- **Bin projects** -- Plan a group of tools and bins together, track which tools still need bins, and create project-scoped bins
 - **Tool editor** -- Rotate tools, add/remove vertices, adjust outlines, snap to grid
 - **Smooth or accurate** -- Toggle Chaikin subdivision for smooth curves, or keep the raw trace; SVG and STL exports both respect this
 - **Finger holes** -- Circular, square, or rectangular cutouts for easy tool removal

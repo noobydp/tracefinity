@@ -18,6 +18,7 @@ class FingerHole(BaseModel):
     height: float | None = None  # for rectangles
     rotation: float = 0.0  # degrees
     shape: Literal["circle", "cylinder", "square", "rectangle"] = "circle"
+    depth_override: float | None = None  # mm; None = use bin_config.cutout_depth
 
 
 class TextLabel(BaseModel):
@@ -209,19 +210,26 @@ class Tool(BaseModel):
     points: list[Point]  # mm, centered at (0,0)
     finger_holes: list[FingerHole] = []  # mm, relative to tool origin
     interior_rings: list[list[Point]] = []  # mm, centered at (0,0)
-    smoothed: bool = False
-    smooth_level: float = 0.0
+    smoothed: bool = True
+    smooth_level: float = 0.5
     source_session_id: str | None = None
     source_polygon_id: str | None = None
     source_image_path: str | None = None
     source_image_width: int | None = None
     source_image_height: int | None = None
-    source_origin_x_mm: float | None = None
-    source_origin_y_mm: float | None = None
-    source_scale_factor: float | None = None
     source_image_transform: list[float] | None = None  # 2D affine [a, b, c, d, e, f] mapping image-px to mm
+    category: str | None = None
+    drawer: str | None = None
+    tags: list[str] = []
+    project_ids: list[str] = []
+    review_status: str | None = None
+    needs_cleanup: bool = False
     thumbnail_path: str | None = None
     created_at: str | None = None
+
+
+class ToolDetailResponse(Tool):
+    image_context: dict | None = None
 
 
 class ToolSummary(BaseModel):
@@ -236,6 +244,12 @@ class ToolSummary(BaseModel):
     thumbnail_url: str | None = None
     image_transform: list[float] | None = None
     image_context: dict | None = None
+    category: str | None = None
+    drawer: str | None = None
+    tags: list[str] = []
+    project_ids: list[str] = []
+    review_status: str | None = None
+    needs_cleanup: bool = False
 
 
 class ToolUpdateRequest(BaseModel):
@@ -246,6 +260,12 @@ class ToolUpdateRequest(BaseModel):
     smoothed: bool | None = None
     smooth_level: float | None = None
     source_image_transform: list[float] | None = None
+    category: str | None = None
+    drawer: str | None = None
+    tags: list[str] | None = None
+    project_ids: list[str] | None = None
+    review_status: str | None = None
+    needs_cleanup: bool | None = None
 
 
 class ToolListResponse(BaseModel):
@@ -260,6 +280,110 @@ class SaveToolsResponse(BaseModel):
     tool_ids: list[str]
 
 
+# --- bin projects ---
+
+ProjectStatus = Literal["active", "ready_to_print", "printed", "archived"]
+ProjectHealthSeverity = Literal["warning", "error"]
+ProjectHealthCode = Literal[
+    "missing_tool",
+    "missing_bin",
+    "bin_missing_project_id",
+    "bin_project_mismatch",
+    "outside_tool",
+    "tool_missing_project_id",
+    "tool_extra_project_id",
+]
+
+class BinProject(BaseModel):
+    id: str
+    name: str
+    description: str | None = None
+    status: ProjectStatus = "active"
+    tool_ids: list[str] = []
+    bin_ids: list[str] = []
+    target_grid_x: int | None = None
+    target_grid_y: int | None = None
+    default_bin_config: BinParams | None = None
+    notes: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+class BinProjectDetail(BinProject):
+    placed_tool_ids: list[str] = []
+    unplaced_tool_ids: list[str] = []
+
+
+class BinProjectSummary(BaseModel):
+    id: str
+    name: str
+    description: str | None = None
+    status: ProjectStatus = "active"
+    tool_count: int = 0
+    bin_count: int = 0
+    placed_count: int = 0
+    unplaced_count: int = 0
+    target_grid_x: int | None = None
+    target_grid_y: int | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class BinProjectListResponse(BaseModel):
+    projects: list[BinProjectSummary]
+
+
+class BinProjectCreateRequest(BaseModel):
+    name: str
+    description: str | None = None
+    status: ProjectStatus = "active"
+    target_grid_x: int | None = None
+    target_grid_y: int | None = None
+    default_bin_config: BinParams | None = None
+    notes: str | None = None
+    tool_ids: list[str] = []
+
+
+class BinProjectUpdateRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    status: ProjectStatus | None = None
+    target_grid_x: int | None = None
+    target_grid_y: int | None = None
+    default_bin_config: BinParams | None = None
+    notes: str | None = None
+
+
+class BinProjectToolsRequest(BaseModel):
+    tool_ids: list[str]
+
+
+class BinProjectCreateBinRequest(BaseModel):
+    name: str | None = None
+    tool_ids: list[str] | None = None
+
+
+class BinProjectBinsRequest(BaseModel):
+    bin_ids: list[str]
+    import_tools: bool = False
+    allow_reassign: bool = False
+
+
+class ProjectHealthIssue(BaseModel):
+    code: ProjectHealthCode
+    severity: ProjectHealthSeverity
+    message: str
+    tool_id: str | None = None
+    bin_id: str | None = None
+    other_project_id: str | None = None
+    repairable: bool = False
+
+
+class ProjectHealthResponse(BaseModel):
+    issues: list[ProjectHealthIssue]
+    repairable_count: int = 0
+    manual_count: int = 0
+
+
 # --- bins ---
 
 class PlacedTool(BaseModel):
@@ -270,6 +394,7 @@ class PlacedTool(BaseModel):
     finger_holes: list[FingerHole] = []  # mm, bin-space
     interior_rings: list[list[Point]] = []  # mm, bin-space
     rotation: float = 0.0  # degrees, applied on top of library points
+    depth_override: float | None = None  # mm; None = use bin_config.cutout_depth
 
 
 class BinConfig(BinParams):
@@ -280,6 +405,7 @@ class BinConfig(BinParams):
 class BinModel(BaseModel):
     id: str
     name: str | None = None
+    project_id: str | None = None
     bin_config: BinConfig = BinConfig()
     placed_tools: list[PlacedTool] = []
     text_labels: list[TextLabel] = []
@@ -294,7 +420,9 @@ class BinPreviewTool(BaseModel):
 class BinSummary(BaseModel):
     id: str
     name: str | None
+    project_id: str | None = None
     created_at: str | None
+    tool_ids: list[str] = []
     tool_count: int
     has_stl: bool
     grid_x: int = 2
@@ -308,6 +436,7 @@ class BinListResponse(BaseModel):
 
 class BinUpdateRequest(BaseModel):
     name: str | None = None
+    project_id: str | None = None
     bin_config: BinConfig | None = None
     placed_tools: list[PlacedTool] | None = None
     text_labels: list[TextLabel] | None = None
@@ -315,4 +444,5 @@ class BinUpdateRequest(BaseModel):
 
 class CreateBinRequest(BaseModel):
     name: str | None = None
+    project_id: str | None = None
     tool_ids: list[str] = []  # pre-place these tools

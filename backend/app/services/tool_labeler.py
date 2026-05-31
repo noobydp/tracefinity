@@ -65,13 +65,14 @@ _BAD_NAME_FRAGMENTS = (
 @dataclass(frozen=True)
 class ToolLabelerConfig:
     provider: str = "none"
-    model: str = "qwen3-vl:2b"
+    model: str = "qwen3-vl:4b"
     ollama_url: str = "http://localhost:11434"
-    timeout_seconds: float = 15.0
+    timeout_seconds: float = 30.0
     max_crop_px: int = 512
-    context_tokens: int = 4096
-    max_tokens: int = 256
-    attempts: int = 1
+    context_tokens: int = 16384
+    max_tokens: int = 8192
+    attempts: int = 2
+    debug: bool = False
     google_api_key: str | None = None
     openrouter_api_key: str | None = None
     gemini_label_model: str = "gemini-2.0-flash"
@@ -88,6 +89,7 @@ class ToolLabelerConfig:
             context_tokens=settings.tool_label_context_tokens,
             max_tokens=settings.tool_label_max_tokens,
             attempts=settings.tool_label_attempts,
+            debug=settings.tool_label_debug,
             google_api_key=settings.google_api_key,
             openrouter_api_key=settings.openrouter_api_key,
             gemini_label_model=settings.gemini_label_model,
@@ -254,13 +256,21 @@ class ToolLabeler:
                 continue
 
             label = parse_label_response(raw)
-            logger.info(
-                "tool label raw response polygon=%d attempt=%d raw=%r parsed=%r",
-                polygon_number,
-                attempt,
-                raw,
-                label,
-            )
+            if self.config.debug:
+                logger.info(
+                    "tool label raw response polygon=%d attempt=%d raw=%r parsed=%r",
+                    polygon_number,
+                    attempt,
+                    raw,
+                    label,
+                )
+            else:
+                logger.info(
+                    "tool label parsed response polygon=%d attempt=%d parsed=%r",
+                    polygon_number,
+                    attempt,
+                    label,
+                )
             last_raw = raw
             last_label = label
             if label:

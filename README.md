@@ -53,13 +53,14 @@ By default, Tracefinity uses [IS-Net](https://github.com/xuebinqin/DIS) for loca
 | `TRACEFINITY_ONNX_ARENA_EXTEND_STRATEGY` | `kSameAsRequested` | ONNX CUDA arena growth strategy. Use `kNextPowerOfTwo` for ONNX Runtime's default growth |
 | `GEMINI_IMAGE_MODEL` | `gemini-3.1-flash-image-preview` | Gemini model for mask generation (see below) |
 | `TOOL_LABEL_PROVIDER` | `none` | Optional automatic tool naming provider. Use `ollama` locally, `hosted` to prefer Gemini/OpenRouter, or `gemini`/`openrouter` explicitly |
-| `TOOL_LABEL_MODEL` | `qwen3-vl:2b` | Ollama vision model used when local tool naming is enabled |
+| `TOOL_LABEL_MODEL` | `qwen3-vl:4b` | Ollama vision model used when local tool naming is enabled |
 | `TOOL_LABEL_OLLAMA_URL` | `http://localhost:11434` | Ollama server URL for local tool naming |
-| `TOOL_LABEL_TIMEOUT_SECONDS` | `15` | Total timeout for background naming |
+| `TOOL_LABEL_TIMEOUT_SECONDS` | `30` | Total timeout for background naming |
 | `TOOL_LABEL_MAX_CROP_PX` | `512` | Maximum long edge for each isolated tool crop used for naming |
-| `TOOL_LABEL_CONTEXT_TOKENS` | `4096` | Ollama context window for naming. Keeps small VLMs from allocating huge KV cache |
-| `TOOL_LABEL_MAX_TOKENS` | `256` | Maximum generated tokens for tool-name JSON |
-| `TOOL_LABEL_ATTEMPTS` | `1` | Number of attempts per tool before keeping generic fallback names |
+| `TOOL_LABEL_CONTEXT_TOKENS` | `16384` | Ollama context window for naming |
+| `TOOL_LABEL_MAX_TOKENS` | `8192` | Maximum generated tokens for tool-name JSON |
+| `TOOL_LABEL_ATTEMPTS` | `2` | Number of attempts per tool before keeping generic fallback names |
+| `TOOL_LABEL_DEBUG` | `false` | Log raw model responses when debugging naming |
 
 ### From Source
 
@@ -128,10 +129,15 @@ If you edit polygons, cancel naming, or save tools before naming finishes, Trace
 Local naming uses Ollama and sends one cropped image per traced polygon to a vision model. It is disabled by default and falls back to generic names whenever Ollama is unavailable or the returned name is not usable.
 
 ```bash
-ollama pull qwen3-vl:2b
+ollama pull qwen3-vl:4b
 TOOL_LABEL_PROVIDER=ollama
-TOOL_LABEL_MODEL=qwen3-vl:2b
+TOOL_LABEL_MODEL=qwen3-vl:4b
 TOOL_LABEL_OLLAMA_URL=http://localhost:11434
+TOOL_LABEL_TIMEOUT_SECONDS=30
+TOOL_LABEL_CONTEXT_TOKENS=16384
+TOOL_LABEL_MAX_TOKENS=8192
+TOOL_LABEL_ATTEMPTS=2
+TOOL_LABEL_DEBUG=0
 ```
 
 For a hosted quality path, set `TOOL_LABEL_PROVIDER=hosted` with `GOOGLE_API_KEY` or `OPENROUTER_API_KEY`. `hosted` prefers Gemini when both keys are present; set `TOOL_LABEL_PROVIDER=openrouter` to force OpenRouter.

@@ -55,12 +55,12 @@ test.describe.serial('happy path', () => {
     const polygonPaths = page.locator('svg path[d]')
     await expect(polygonPaths.first()).toBeVisible({ timeout: 5_000 })
 
-    // select all detected tools by clicking each tool row in the sidebar
-    const toolRows = page.locator('.space-y-3 .text-xs.space-y-0\\.5 > div')
-    const count = await toolRows.count()
+    // select all detected tools by clicking the include control in the sidebar
+    const includeButtons = page.getByRole('button', { name: /^Include tool \d+$/ })
+    const count = await includeButtons.count()
     expect(count).toBeGreaterThan(0)
     for (let i = 0; i < count; i++) {
-      await toolRows.nth(i).click()
+      await includeButtons.nth(i).click()
     }
 
     const saveBtn = page.getByRole('button', { name: /^Save \d+ tools?$/ })

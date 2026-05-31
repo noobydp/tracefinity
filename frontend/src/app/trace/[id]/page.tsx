@@ -412,6 +412,15 @@ export default function TracePage() {
     }
   }
 
+  const toggleIncludedPolygon = useCallback((polygonId: string) => {
+    setIncludedPolygons(current => {
+      const next = new Set(current)
+      if (next.has(polygonId)) next.delete(polygonId)
+      else next.add(polygonId)
+      return next
+    })
+  }, [])
+
   // clear status interval on unmount (if user navigates away mid-trace)
   useEffect(() => {
     return () => {
@@ -714,12 +723,7 @@ export default function TracePage() {
                     return (
                       <div
                         key={p.id}
-                        onClick={() => {
-                          const next = new Set(includedPolygons)
-                          if (next.has(p.id)) next.delete(p.id)
-                          else next.add(p.id)
-                          setIncludedPolygons(next)
-                        }}
+                        onClick={() => toggleIncludedPolygon(p.id)}
                         className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer transition-colors ${
                           isIncluded
                             ? 'bg-accent-muted text-accent'
@@ -728,11 +732,20 @@ export default function TracePage() {
                               : 'text-text-muted hover:bg-elevated hover:text-text-secondary'
                         }`}
                       >
-                        <div className={`w-3.5 h-3.5 rounded-sm border flex items-center justify-center flex-shrink-0 transition-colors ${
-                          isIncluded ? 'bg-accent border-accent' : 'border-border-subtle'
-                        }`}>
+                        <button
+                          type="button"
+                          aria-label={`Include tool ${index + 1}`}
+                          aria-pressed={isIncluded}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            toggleIncludedPolygon(p.id)
+                          }}
+                          className={`w-3.5 h-3.5 rounded-sm border flex items-center justify-center flex-shrink-0 transition-colors ${
+                            isIncluded ? 'bg-accent border-accent' : 'border-border-subtle hover:border-accent'
+                          }`}
+                        >
                           {isIncluded && <Check className="w-2.5 h-2.5 text-white" />}
-                        </div>
+                        </button>
                         <input
                           value={p.label}
                           aria-label={`Tool ${index + 1} name`}

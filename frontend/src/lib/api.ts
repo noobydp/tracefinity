@@ -115,6 +115,12 @@ export async function updatePolygons(
   })
 }
 
+export async function retryToolLabels(sessionId: string): Promise<Session> {
+  return fetchApi(`/api/sessions/${sessionId}/tool-labels/retry`, {
+    method: 'POST',
+  })
+}
+
 export async function generateStl(
   sessionId: string,
   config: BinConfig,

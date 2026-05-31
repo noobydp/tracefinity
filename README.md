@@ -55,11 +55,11 @@ By default, Tracefinity uses [IS-Net](https://github.com/xuebinqin/DIS) for loca
 | `TOOL_LABEL_PROVIDER` | `none` | Optional automatic tool naming provider. Use `ollama` locally, `hosted` to prefer Gemini/OpenRouter, or `gemini`/`openrouter` explicitly |
 | `TOOL_LABEL_MODEL` | `qwen3-vl:2b` | Ollama vision model used when local tool naming is enabled |
 | `TOOL_LABEL_OLLAMA_URL` | `http://localhost:11434` | Ollama server URL for local tool naming |
-| `TOOL_LABEL_TIMEOUT_SECONDS` | `30` | Per-request timeout for background naming |
-| `TOOL_LABEL_MAX_CROP_PX` | `512` | Maximum long edge for each isolated tool crop in the naming contact sheet |
+| `TOOL_LABEL_TIMEOUT_SECONDS` | `15` | Total timeout for background naming |
+| `TOOL_LABEL_MAX_CROP_PX` | `512` | Maximum long edge for each isolated tool crop used for naming |
 | `TOOL_LABEL_CONTEXT_TOKENS` | `4096` | Ollama context window for naming. Keeps small VLMs from allocating huge KV cache |
 | `TOOL_LABEL_MAX_TOKENS` | `256` | Maximum generated tokens for tool-name JSON |
-| `TOOL_LABEL_ATTEMPTS` | `2` | Number of attempts before keeping generic fallback names |
+| `TOOL_LABEL_ATTEMPTS` | `1` | Number of attempts per tool before keeping generic fallback names |
 
 ### From Source
 
@@ -121,11 +121,11 @@ See [#21](https://github.com/tracefinity/tracefinity/issues/21) for the benchmar
 
 Tracefinity can optionally name traced polygons before you save them to the tool library. This keeps the trace page, selection list, and saved tool names in sync through the existing polygon label.
 
-Naming runs in the background after tracing, so the trace page returns immediately with `tool 1`, `tool 2`, etc. The UI updates labels when the background result lands and only replaces still-generic labels.
+Naming runs in the background after tracing, so the trace page returns immediately with `tool 1`, `tool 2`, etc. The UI updates each label as its background result lands and only replaces still-generic labels.
 
-If you save tools before naming finishes, Tracefinity keeps the labels that were visible when you saved and ignores late naming results for that trace.
+If you edit polygons, cancel naming, or save tools before naming finishes, Tracefinity keeps the labels that were visible when you acted and ignores late naming results for that trace.
 
-Local naming uses Ollama and sends one numbered contact sheet per trace to a vision model. It is disabled by default and falls back to generic names whenever Ollama is unavailable or the returned name is not usable.
+Local naming uses Ollama and sends one cropped image per traced polygon to a vision model. It is disabled by default and falls back to generic names whenever Ollama is unavailable or the returned name is not usable.
 
 ```bash
 ollama pull qwen3-vl:2b

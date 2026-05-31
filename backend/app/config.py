@@ -26,11 +26,11 @@ class Settings(BaseSettings):
     tool_label_provider: str = "none"
     tool_label_model: str = "qwen3-vl:2b"
     tool_label_ollama_url: str = "http://localhost:11434"
-    tool_label_timeout_seconds: float = 30.0
+    tool_label_timeout_seconds: float = 15.0
     tool_label_max_crop_px: int = 512
     tool_label_context_tokens: int = 4096
     tool_label_max_tokens: int = 256
-    tool_label_attempts: int = 2
+    tool_label_attempts: int = 1
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

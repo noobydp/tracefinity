@@ -3,9 +3,10 @@
 ## Sessions (trace workflow)
 - `POST /api/upload` - upload image, auto-detect corners
 - `POST /api/sessions/{id}/corners` - set corners, apply perspective correction
-- `POST /api/sessions/{id}/trace` - AI trace tool outlines. When automatic naming is enabled, returns generic labels immediately with `labels_pending: true`; the session updates asynchronously when generated names are ready.
+- `POST /api/sessions/{id}/trace` - AI trace tool outlines. When automatic naming is enabled, returns generic labels immediately with `labels_pending: true`; the session updates asynchronously when generated names are ready. Polygon edits, cancellation, or saving tools cancel pending naming for that trace.
 - `POST /api/sessions/{id}/trace-mask` - trace from uploaded mask. Uses the same optional background naming path as AI tracing.
 - `PUT /api/sessions/{id}/polygons` - save polygon edits
+- `POST /api/sessions/{id}/tool-labels/retry` - retry automatic naming for still-generic traced tool labels
 - `POST /api/sessions/{id}/save-tools` - convert traced polygons to library tools
 - `GET /api/sessions` - list sessions
 - `GET /api/sessions/{id}` - get session state

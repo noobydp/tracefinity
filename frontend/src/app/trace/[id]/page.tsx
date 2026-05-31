@@ -3,12 +3,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useRouter, useParams } from 'next/navigation'
 import { useDebouncedSave } from '@/hooks/useDebouncedSave'
-import { Loader2, Copy, Upload, Download, Check, ChevronDown, ChevronRight } from 'lucide-react'
+import { Loader2, Copy, Upload, Download, Check, ChevronDown, ChevronRight, RotateCcw } from 'lucide-react'
 import { PaperCornerEditor } from '@/components/PaperCornerEditor'
 import { PolygonEditor } from '@/components/PolygonEditor'
 import { SessionInfo } from '@/components/SessionInfo'
 import { Alert } from '@/components/Alert'
-import { getSession, setCorners, traceTools, updatePolygons, updateSession, getImageUrl, getAvailableKeys, traceFromMask, saveToolsFromSession } from '@/lib/api'
+import { getSession, setCorners, traceTools, updatePolygons, updateSession, getImageUrl, getAvailableKeys, traceFromMask, saveToolsFromSession, retryToolLabels } from '@/lib/api'
 import { CornersHint, TraceHint, EditHint } from '@/components/OnboardingIllustrations'
 import { StepBar } from '@/components/StepBar'
 import type { Point, Polygon, Session, ToolLabelStatus } from '@/types'
@@ -32,6 +32,17 @@ const TRACE_STEPS = [
 
 function hasGenericToolLabel(label: string) {
   return /^tool\s+\d+$/i.test(label.trim())
+}
+
+function normalizedToolLabel(label: string, index: number) {
+  return label.trim() || `tool ${index + 1}`
+}
+
+function normalizePolygonLabels(polygons: Polygon[]) {
+  return polygons.map((poly, index) => ({
+    ...poly,
+    label: normalizedToolLabel(poly.label, index),
+  }))
 }
 
 export default function TracePage() {
@@ -73,6 +84,7 @@ export default function TracePage() {
   const maskInputRef = useRef<HTMLInputElement>(null)
   const statusInterval = useRef<NodeJS.Timeout | null>(null)
   const labelPollRun = useRef(0)
+  const polygonsDirtyRef = useRef(false)
 
   useEffect(() => {
     if (!methodOpen) return
@@ -141,6 +153,14 @@ export default function TracePage() {
 
   const singleTracer = tracers.length <= 1
 
+  const markPolygonsDirty = useCallback(() => {
+    polygonsDirtyRef.current = true
+    if (toolLabelStatus === 'pending') {
+      labelPollRun.current += 1
+      setToolLabelStatus('idle')
+    }
+  }, [toolLabelStatus])
+
   const pollLabelUpdates = useCallback(async (initialPolygons: Polygon[], labelsPending?: boolean) => {
     if (!labelsPending || initialPolygons.length === 0) return
 
@@ -148,8 +168,8 @@ export default function TracePage() {
     const runId = ++labelPollRun.current
     const initialIds = new Set(initialPolygons.map(p => p.id))
 
-    for (let attempt = 0; attempt < 30; attempt += 1) {
-      await new Promise(resolve => setTimeout(resolve, 1500))
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 500))
       if (labelPollRun.current !== runId) return
 
       try {
@@ -327,15 +347,70 @@ export default function TracePage() {
   }
 
   const handlePolygonsChange = useCallback((updated: Polygon[]) => {
+    markPolygonsDirty()
     setPolygons(updated)
-  }, [])
+  }, [markPolygonsDirty])
+
+  const handlePolygonLabelChange = useCallback((polygonId: string, label: string) => {
+    markPolygonsDirty()
+    setPolygons(current => current.map(poly => (
+      poly.id === polygonId ? { ...poly, label } : poly
+    )))
+  }, [markPolygonsDirty])
+
+  const handlePolygonLabelBlur = useCallback((polygonId: string, index: number) => {
+    markPolygonsDirty()
+    setPolygons(current => current.map(poly => {
+      if (poly.id !== polygonId) return poly
+      return { ...poly, label: normalizedToolLabel(poly.label, index) }
+    }))
+  }, [markPolygonsDirty])
 
   useDebouncedSave(
-    () => updatePolygons(sessionId, polygons),
+    async () => {
+      if (!polygonsDirtyRef.current) return
+      await updatePolygons(sessionId, normalizePolygonLabels(polygons))
+      polygonsDirtyRef.current = false
+    },
     [polygons, sessionId],
     300,
     { skipInitial: true }
   )
+
+  async function handleCancelToolNaming() {
+    labelPollRun.current += 1
+    setToolLabelStatus('idle')
+    try {
+      await updatePolygons(sessionId, normalizePolygonLabels(polygons))
+      polygonsDirtyRef.current = false
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'failed to cancel naming')
+    }
+  }
+
+  async function handleRetryToolNaming() {
+    labelPollRun.current += 1
+    setError(null)
+    try {
+      if (polygonsDirtyRef.current) {
+        const normalized = normalizePolygonLabels(polygons)
+        setPolygons(normalized)
+        await updatePolygons(sessionId, normalized)
+        polygonsDirtyRef.current = false
+      }
+
+      const latest = await retryToolLabels(sessionId)
+      const latestPolygons = latest.polygons || polygons
+      const latestStatus = latest.tool_label_status || 'idle'
+      setSession(latest)
+      setPolygons(latestPolygons)
+      setToolLabelStatus(latestStatus)
+      void pollLabelUpdates(latestPolygons, latestStatus === 'pending')
+    } catch {
+      setToolLabelStatus('failed')
+      setError('Naming retry failed.')
+    }
+  }
 
   // clear status interval on unmount (if user navigates away mid-trace)
   useEffect(() => {
@@ -353,6 +428,12 @@ export default function TracePage() {
     setSaving(true)
     setError(null)
     try {
+      labelPollRun.current += 1
+      const normalized = normalizePolygonLabels(polygons)
+      setPolygons(normalized)
+      setToolLabelStatus('idle')
+      await updatePolygons(sessionId, normalized)
+      polygonsDirtyRef.current = false
       await saveToolsFromSession(sessionId, Array.from(includedPolygons))
       router.push('/')
     } catch (err) {
@@ -597,21 +678,38 @@ export default function TracePage() {
               </p>
 
               {toolLabelStatus === 'pending' && (
-                <div className="flex items-center gap-2 text-xs text-text-muted">
-                  <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-500" />
-                  <span>Naming tools...</span>
+                <div className="flex items-center justify-between gap-2 text-xs text-text-muted">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-500" />
+                    <span>Naming tools...</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleCancelToolNaming}
+                    className="shrink-0 rounded border border-border-subtle px-2 py-0.5 text-text-secondary hover:border-accent hover:text-accent"
+                  >
+                    Cancel
+                  </button>
                 </div>
               )}
 
               {toolLabelStatus === 'failed' && (
-                <div className="text-xs text-amber-500">
-                  Tool names unavailable. Generic names are safe to edit.
+                <div className="flex items-center justify-between gap-2 text-xs text-amber-500">
+                  <span>Naming failed.</span>
+                  <button
+                    type="button"
+                    onClick={handleRetryToolNaming}
+                    className="inline-flex shrink-0 items-center gap-1 rounded border border-amber-500/40 px-2 py-0.5 text-amber-500 hover:border-amber-400 hover:text-amber-400"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    Retry
+                  </button>
                 </div>
               )}
 
               {polygons.length > 0 && (
                 <div className="text-xs space-y-0.5">
-                  {polygons.map((p) => {
+                  {polygons.map((p, index) => {
                     const isIncluded = includedPolygons.has(p.id)
                     return (
                       <div
@@ -635,7 +733,24 @@ export default function TracePage() {
                         }`}>
                           {isIncluded && <Check className="w-2.5 h-2.5 text-white" />}
                         </div>
-                        <span className="truncate">{p.label}</span>
+                        <input
+                          value={p.label}
+                          aria-label={`Tool ${index + 1} name`}
+                          onClick={(event) => event.stopPropagation()}
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onChange={(event) => handlePolygonLabelChange(p.id, event.target.value)}
+                          onBlur={() => handlePolygonLabelBlur(p.id, index)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') {
+                              event.currentTarget.blur()
+                            }
+                          }}
+                          className={`min-w-0 flex-1 rounded border px-1.5 py-0.5 text-xs outline-none transition-colors ${
+                            isIncluded
+                              ? 'border-accent/30 bg-base/60 text-accent focus:border-accent'
+                              : 'border-transparent bg-transparent text-inherit hover:border-border-subtle focus:border-accent focus:bg-base focus:text-text-primary'
+                          }`}
+                        />
                       </div>
                     )
                   })}

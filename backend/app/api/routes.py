@@ -1,9 +1,11 @@
+import asyncio
 import hashlib
 import json
 import logging
 import math
 import os
 import re
+import threading
 import uuid
 import zipfile
 from datetime import datetime
@@ -170,6 +172,8 @@ image_processor = ImageProcessor()
 
 # one AITracer per local model so each can cache its loaded model
 _tracers: dict[str, AITracer] = {}
+_tool_label_warmup_active = False
+_tool_label_warmup_lock = threading.Lock()
 
 
 def _get_tracer(tracer_id: str | None = None) -> AITracer:
@@ -188,6 +192,33 @@ def _get_tracer(tracer_id: str | None = None) -> AITracer:
                 local_model_name=tid,
             )
     return _tracers[tid]
+
+
+def _start_tool_label_warmup() -> None:
+    labeler = ToolLabeler()
+    if not labeler.enabled():
+        return
+    if labeler.config.provider.strip().lower() != "ollama":
+        return
+
+    global _tool_label_warmup_active
+    with _tool_label_warmup_lock:
+        if _tool_label_warmup_active:
+            return
+        _tool_label_warmup_active = True
+
+    def _run() -> None:
+        try:
+            logger.info("starting tool label warmup")
+            asyncio.run(labeler.warm_up())
+        except Exception as exc:
+            logger.info("tool label warmup failed: %s", exc)
+        finally:
+            global _tool_label_warmup_active
+            with _tool_label_warmup_lock:
+                _tool_label_warmup_active = False
+
+    threading.Thread(target=_run, name="tool-label-warmup", daemon=True).start()
 
 
 def _schedule_tool_labeling(
@@ -229,7 +260,13 @@ async def _label_session_polygons_background(
     try:
         user_sessions, _, _ = get_stores(user_id)
         session = user_sessions.get(session_id)
-        if not session or not session.polygons:
+        if not session:
+            return
+        if not session.polygons:
+            if session.tool_label_status == "pending":
+                session.tool_label_status = "idle"
+                session.tool_label_error = None
+                user_sessions.set(session_id, session)
             return
         if session.tool_label_status != "pending":
             logger.info("skipping background tool labeling session=%s; no longer pending", session_id)
@@ -242,14 +279,68 @@ async def _label_session_polygons_background(
             if poly.id in id_set
         ]
         if not candidates:
+            logger.info("ignoring stale background tool labeling session=%s; target polygons no longer exist", session_id)
             return
 
-        labeled = await ToolLabeler().label_polygons(image_path, candidates)
+        streamed_labels = 0
+
+        async def stream_label(poly: Polygon, _polygon_index: int) -> bool:
+            nonlocal streamed_labels
+            if not poly.label or is_fallback_label(poly.label):
+                return True
+
+            fresh = user_sessions.get(session_id)
+            if not fresh:
+                return False
+            if not fresh.polygons:
+                if fresh.tool_label_status == "pending":
+                    fresh.tool_label_status = "idle"
+                    fresh.tool_label_error = None
+                    user_sessions.set(session_id, fresh)
+                return False
+            if fresh.tool_label_status != "pending":
+                logger.info("stopping streamed tool labels session=%s; no longer pending", session_id)
+                return False
+
+            for fresh_poly in fresh.polygons:
+                if fresh_poly.id != poly.id:
+                    continue
+                if is_fallback_label(fresh_poly.label):
+                    fresh_poly.label = poly.label
+                    fresh.tool_label_error = None
+                    user_sessions.set(session_id, fresh)
+                    streamed_labels += 1
+                    logger.info(
+                        "background tool labeling streamed session=%s polygon=%s label=%r",
+                        session_id,
+                        poly.id,
+                        poly.label,
+                    )
+                return True
+
+            return True
+
+        labeled = await ToolLabeler().label_polygons(image_path, candidates, on_label=stream_label)
         fresh = user_sessions.get(session_id)
-        if not fresh or not fresh.polygons:
+        if not fresh:
+            return
+        if not fresh.polygons:
+            if fresh.tool_label_status == "pending":
+                fresh.tool_label_status = "idle"
+                fresh.tool_label_error = None
+                user_sessions.set(session_id, fresh)
             return
         if fresh.tool_label_status != "pending":
             logger.info("ignoring background tool labels session=%s; no longer pending", session_id)
+            return
+
+        fresh_target_ids = {
+            poly.id
+            for poly in fresh.polygons
+            if poly.id in id_set
+        }
+        if not fresh_target_ids:
+            logger.info("ignoring stale background tool labels session=%s; target polygons were replaced", session_id)
             return
 
         labels_by_id = {
@@ -257,13 +348,6 @@ async def _label_session_polygons_background(
             for poly in labeled
             if poly.label and not is_fallback_label(poly.label)
         }
-        if not labels_by_id:
-            fresh.tool_label_status = "failed"
-            fresh.tool_label_error = "No usable tool names returned"
-            user_sessions.set(session_id, fresh)
-            logger.warning("background tool labeling failed session=%s: no usable labels", session_id)
-            return
-
         changed = False
         for poly in fresh.polygons:
             label = labels_by_id.get(poly.id)
@@ -271,11 +355,28 @@ async def _label_session_polygons_background(
                 poly.label = label
                 changed = True
 
+        final_label_count = sum(
+            1
+            for poly in fresh.polygons
+            if poly.id in fresh_target_ids and poly.label and not is_fallback_label(poly.label)
+        )
+        if final_label_count == 0:
+            fresh.tool_label_status = "failed"
+            fresh.tool_label_error = "No usable tool names returned"
+            user_sessions.set(session_id, fresh)
+            logger.warning("background tool labeling failed session=%s: no usable labels", session_id)
+            return
+
         if changed:
             fresh.tool_label_status = "complete"
             fresh.tool_label_error = None
             user_sessions.set(session_id, fresh)
-            logger.info("background tool labeling updated session=%s labels=%d", session_id, len(labels_by_id))
+            logger.info(
+                "background tool labeling updated session=%s labels=%d streamed=%d",
+                session_id,
+                len(labels_by_id),
+                streamed_labels,
+            )
         else:
             fresh.tool_label_status = "complete"
             fresh.tool_label_error = None
@@ -684,6 +785,7 @@ async def set_corners(request: Request, session_id: str, req: CornersRequest, us
     session.paper_size = req.paper_size
     session.scale_factor = scale_factor
     user_sessions.set(session_id, session)
+    _start_tool_label_warmup()
 
     return CornersResponse(
         corrected_image_url=f"/storage/{session.corrected_image_path}",
@@ -735,6 +837,7 @@ async def trace_tools(
 
     tracer = _get_tracer(tracer_id)
     corrected_image_path = _abs(session.corrected_image_path)
+    _start_tool_label_warmup()
     try:
         polygons, mask_path = await tracer.trace_tools(
             corrected_image_path,
@@ -809,6 +912,7 @@ async def trace_from_mask(
     mask_path.write_bytes(content)
 
     corrected_image_path = _abs(session.corrected_image_path)
+    _start_tool_label_warmup()
     contours = _get_tracer()._trace_mask(str(mask_path), corrected_image_path)
 
     if not contours:
@@ -852,8 +956,56 @@ async def update_polygons(request: Request, session_id: str, req: PolygonsReques
         raise HTTPException(status_code=404, detail="session not found")
 
     session.polygons = req.polygons
+    if session.tool_label_status == "pending":
+        session.tool_label_status = "idle"
+        session.tool_label_error = None
+        logger.info("cancelled pending tool labeling session=%s after polygon update", session_id)
     user_sessions.set(session_id, session)
     return StatusResponse(status="ok")
+
+
+@router.post("/sessions/{session_id}/tool-labels/retry", response_model=Session)
+async def retry_tool_labels(
+    request: Request,
+    session_id: str,
+    background_tasks: BackgroundTasks,
+    user_id: str = Depends(get_user_id),
+):
+    user_sessions, _, _ = get_stores(user_id)
+    session = user_sessions.get(session_id)
+    if not session or not session.corrected_image_path or not session.polygons:
+        raise HTTPException(status_code=400, detail="no traced tools to name")
+
+    if session.tool_label_status == "pending":
+        return session
+
+    retry_polygons = [
+        poly
+        for poly in session.polygons
+        if is_fallback_label(poly.label)
+    ]
+    if not retry_polygons:
+        session.tool_label_status = "complete"
+        session.tool_label_error = None
+        user_sessions.set(session_id, session)
+        return session
+
+    corrected_image_path = _abs(session.corrected_image_path)
+    _start_tool_label_warmup()
+    labels_pending = _schedule_tool_labeling(
+        background_tasks,
+        user_id,
+        session_id,
+        corrected_image_path,
+        retry_polygons,
+    )
+    if not labels_pending:
+        raise HTTPException(status_code=400, detail="tool naming unavailable")
+
+    session.tool_label_status = "pending"
+    session.tool_label_error = None
+    user_sessions.set(session_id, session)
+    return session
 
 
 @router.post("/sessions/{session_id}/generate", response_model=GenerateResponse)

@@ -4,8 +4,9 @@ import asyncio
 import base64
 import json
 import logging
-import math
 import re
+import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 import cv2
@@ -16,17 +17,21 @@ from app.models.schemas import Point, Polygon
 
 logger = logging.getLogger(__name__)
 
-LABEL_PROMPT = """Identify each numbered physical tool or object in this contact sheet.
+LabelCallback = Callable[[Polygon, int], Awaitable[bool]]
+
+LABEL_PROMPT = """Identify the physical tool or object in this image.
 Return only JSON with this shape:
-{"labels":[{"id":1,"name":"short common tool name","confidence":0.0}]}
+{"name":"short common tool name"}
 
 Rules:
-- Include one label object for every visible number.
-- Use the visible number as id.
-- Use 1 to 4 words for each name.
+- Use 1 to 4 words for the name.
 - Prefer common workshop/tool names.
-- Do not mention color, background, paper, photo, silhouette, contact sheet, or image.
+- Do not mention color, background, paper, photo, silhouette, or image.
 - If unsure, use "tool"."""
+
+OLLAMA_WARMUP_PROMPT = """Identify the simple object in this image.
+Return only JSON with this shape:
+{"name":"tool"}"""
 
 _BAD_EXACT_NAMES = {
     "tool",
@@ -62,11 +67,11 @@ class ToolLabelerConfig:
     provider: str = "none"
     model: str = "qwen3-vl:2b"
     ollama_url: str = "http://localhost:11434"
-    timeout_seconds: float = 30.0
+    timeout_seconds: float = 15.0
     max_crop_px: int = 512
     context_tokens: int = 4096
     max_tokens: int = 256
-    attempts: int = 2
+    attempts: int = 1
     google_api_key: str | None = None
     openrouter_api_key: str | None = None
     gemini_label_model: str = "gemini-2.0-flash"
@@ -98,7 +103,25 @@ class ToolLabeler:
         provider = self.config.provider.strip().lower()
         return provider not in ("", "none", "off", "disabled")
 
-    async def label_polygons(self, image_path: str, polygons: list[Polygon]) -> list[Polygon]:
+    async def warm_up(self) -> None:
+        """Best-effort provider warmup; never fail tracing."""
+        if not self.enabled():
+            return
+        provider = self.config.provider.strip().lower()
+        if provider != "ollama":
+            return
+
+        try:
+            await self._warm_up_ollama()
+        except Exception as exc:
+            logger.info("tool label warmup skipped: %s", exc)
+
+    async def label_polygons(
+        self,
+        image_path: str,
+        polygons: list[Polygon],
+        on_label: LabelCallback | None = None,
+    ) -> list[Polygon]:
         """Populate polygon labels when configured; never fail tracing."""
         if not polygons or not self.enabled():
             return polygons
@@ -114,108 +137,178 @@ class ToolLabeler:
             return _apply_fallback_labels(polygons)
 
         logger.info(
-            "labeling %d tools provider=%s model=%s mode=batch-contact-sheet",
+            "labeling %d tools provider=%s model=%s mode=per-tool-crop",
             len(polygons),
             provider,
             self._model_name(provider),
         )
 
         try:
-            sheet = build_contact_sheet(image, polygons, self.config.max_crop_px)
-            if sheet is None:
-                return _apply_fallback_labels(polygons)
-
-            logger.info(
-                "tool label request provider=%s tools=%d sheet_bytes=%d",
-                provider,
-                len(sheet.entries),
-                len(sheet.png),
-            )
-            raw_labels, labels = await self._label_contact_sheet_with_retries(
-                sheet.png,
-                provider,
-                len(sheet.entries),
-            )
-
-            for sheet_id, polygon_index in sheet.entries:
+            deadline = time.monotonic() + max(0.1, self.config.timeout_seconds)
+            for polygon_index, polygon in enumerate(polygons):
                 fallback = fallback_label(polygon_index)
-                polygons[polygon_index].label = labels.get(sheet_id) or fallback
+                crop = crop_polygon_image(image, polygon, self.config.max_crop_px)
+                if crop is None:
+                    polygon.label = fallback
+                    logger.info("tool label skipped polygon=%d reason=no_crop", polygon_index + 1)
+                    continue
+
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    polygon.label = fallback
+                    logger.warning("tool label timeout before polygon=%d", polygon_index + 1)
+                    continue
+
                 logger.info(
-                    "tool label result polygon=%d sheet_id=%d final=%r",
+                    "tool label request provider=%s polygon=%d crop_bytes=%d remaining=%.1f",
+                    provider,
                     polygon_index + 1,
-                    sheet_id,
-                    polygons[polygon_index].label,
+                    len(crop),
+                    remaining,
                 )
+                _raw, label = await self._label_crop_with_retries(
+                    crop,
+                    provider,
+                    polygon_index + 1,
+                    deadline,
+                )
+                polygon.label = label or fallback
+                logger.info(
+                    "tool label result polygon=%d final=%r",
+                    polygon_index + 1,
+                    polygon.label,
+                )
+                if on_label:
+                    try:
+                        should_continue = await on_label(polygon, polygon_index)
+                    except Exception:
+                        logger.exception("tool label callback failed polygon=%d", polygon_index + 1)
+                        should_continue = False
+                    if not should_continue:
+                        logger.info("tool labeling stopped after polygon=%d", polygon_index + 1)
+                        break
 
             for index, poly in enumerate(polygons):
                 if not poly.label:
                     poly.label = fallback_label(index)
         except Exception as exc:
-            logger.warning("tool batch label failed: %s", exc)
+            logger.warning("tool label failed: %s", exc)
             _apply_fallback_labels(polygons)
 
         return polygons
 
-    async def _label_contact_sheet(self, sheet_png: bytes, provider: str) -> str:
+    async def _label_crop(self, crop_png: bytes, provider: str) -> str:
         if provider == "ollama":
-            return await self._label_contact_sheet_ollama(sheet_png)
+            return await self._label_crop_ollama(crop_png)
         if provider == "openrouter":
-            return await self._label_contact_sheet_openrouter(sheet_png)
+            return await self._label_crop_openrouter(crop_png)
         if provider in ("gemini", "google"):
-            return await self._label_contact_sheet_google(sheet_png)
+            return await self._label_crop_google(crop_png)
         if provider == "hosted":
             if self.config.google_api_key:
-                return await self._label_contact_sheet_google(sheet_png)
+                return await self._label_crop_google(crop_png)
             if self.config.openrouter_api_key:
-                return await self._label_contact_sheet_openrouter(sheet_png)
+                return await self._label_crop_openrouter(crop_png)
             raise RuntimeError("hosted tool labeling requires GOOGLE_API_KEY or OPENROUTER_API_KEY")
         raise RuntimeError(f"unsupported tool label provider: {provider}")
 
-    async def _label_contact_sheet_with_retries(
+    async def _label_crop_with_retries(
         self,
-        sheet_png: bytes,
+        crop_png: bytes,
         provider: str,
-        count: int,
-    ) -> tuple[str, dict[int, str]]:
+        polygon_number: int,
+        deadline: float,
+    ) -> tuple[str, str | None]:
         attempts = max(1, self.config.attempts)
         last_raw = ""
-        last_labels: dict[int, str] = {}
+        last_label: str | None = None
 
         for attempt in range(1, attempts + 1):
-            raw = await self._label_contact_sheet(sheet_png, provider)
-            labels = parse_labels_response(raw, count)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                logger.warning("tool label timeout before polygon=%d attempt=%d", polygon_number, attempt)
+                break
+
+            try:
+                raw = await asyncio.wait_for(
+                    self._label_crop(crop_png, provider),
+                    timeout=remaining,
+                )
+            except TimeoutError:
+                logger.warning(
+                    "tool label polygon=%d attempt=%d timed out after %.1fs",
+                    polygon_number,
+                    attempt,
+                    remaining,
+                )
+                break
+            except Exception as exc:
+                logger.warning(
+                    "tool label polygon=%d attempt=%d failed: %s",
+                    polygon_number,
+                    attempt,
+                    exc,
+                )
+                if attempt < attempts:
+                    await asyncio.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
+                continue
+
+            label = parse_label_response(raw)
             logger.info(
-                "tool label raw response attempt=%d raw=%r parsed=%s",
+                "tool label raw response polygon=%d attempt=%d raw=%r parsed=%r",
+                polygon_number,
                 attempt,
                 raw,
-                labels,
+                label,
             )
             last_raw = raw
-            last_labels = labels
-            if len(labels) == count:
-                return raw, labels
+            last_label = label
+            if label:
+                return raw, label
 
             if attempt < attempts:
-                if labels:
-                    logger.warning(
-                        "tool label attempt %d returned partial labels (%d/%d); retrying",
-                        attempt,
-                        len(labels),
-                        count,
-                    )
-                else:
-                    logger.warning(
-                        "tool label attempt %d returned no usable labels; retrying",
-                        attempt,
-                    )
-                await asyncio.sleep(0.5)
+                logger.warning(
+                    "tool label polygon=%d attempt=%d returned no usable label; retrying",
+                    polygon_number,
+                    attempt,
+                )
+                await asyncio.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
 
-        return last_raw, last_labels
+        return last_raw, last_label
 
-    async def _label_contact_sheet_ollama(self, sheet_png: bytes) -> str:
+    async def _warm_up_ollama(self) -> None:
         import httpx
 
-        image_b64 = base64.b64encode(sheet_png).decode("ascii")
+        image_b64 = base64.b64encode(warmup_image_png()).decode("ascii")
+        payload = {
+            "model": self.config.model,
+            "stream": False,
+            "format": "json",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": OLLAMA_WARMUP_PROMPT,
+                    "images": [image_b64],
+                }
+            ],
+            "options": {
+                "temperature": 0,
+                "num_ctx": self.config.context_tokens,
+                "num_predict": 16,
+            },
+        }
+        url = self.config.ollama_url.rstrip("/") + "/api/chat"
+
+        async with httpx.AsyncClient(timeout=self.config.timeout_seconds) as client:
+            resp = await client.post(url, json=payload)
+            resp.raise_for_status()
+
+        logger.info("tool label warmup completed provider=ollama model=%s", self.config.model)
+
+    async def _label_crop_ollama(self, crop_png: bytes) -> str:
+        import httpx
+
+        image_b64 = base64.b64encode(crop_png).decode("ascii")
         payload = {
             "model": self.config.model,
             "stream": False,
@@ -244,13 +337,13 @@ class ToolLabeler:
         result = await asyncio.wait_for(_call(), timeout=self.config.timeout_seconds)
         return result.get("message", {}).get("content", "")
 
-    async def _label_contact_sheet_openrouter(self, sheet_png: bytes) -> str:
+    async def _label_crop_openrouter(self, crop_png: bytes) -> str:
         import httpx
 
         if not self.config.openrouter_api_key:
             raise RuntimeError("OPENROUTER_API_KEY is required for OpenRouter tool labeling")
 
-        image_b64 = base64.b64encode(sheet_png).decode("ascii")
+        image_b64 = base64.b64encode(crop_png).decode("ascii")
         payload = {
             "model": self.config.openrouter_label_model,
             "messages": [
@@ -284,7 +377,7 @@ class ToolLabeler:
         result = await asyncio.wait_for(_call(), timeout=self.config.timeout_seconds)
         return result["choices"][0]["message"]["content"]
 
-    async def _label_contact_sheet_google(self, sheet_png: bytes) -> str:
+    async def _label_crop_google(self, crop_png: bytes) -> str:
         if not self.config.google_api_key:
             raise RuntimeError("GOOGLE_API_KEY is required for Gemini tool labeling")
 
@@ -298,7 +391,7 @@ class ToolLabeler:
                 model=self.config.gemini_label_model,
                 contents=[
                     LABEL_PROMPT,
-                    types.Part.from_bytes(data=sheet_png, mime_type="image/png"),
+                    types.Part.from_bytes(data=crop_png, mime_type="image/png"),
                 ],
                 config=types.GenerateContentConfig(
                     temperature=0,
@@ -319,71 +412,12 @@ class ToolLabeler:
         return self.config.model
 
 
-@dataclass(frozen=True)
-class ContactSheet:
-    png: bytes
-    entries: list[tuple[int, int]]
-
-
 def fallback_label(index: int) -> str:
     return f"tool {index + 1}"
 
 
 def is_fallback_label(label: str | None) -> bool:
     return bool(label and re.fullmatch(r"tool\s+\d+", label.strip().lower()))
-
-
-def build_contact_sheet(image: np.ndarray, polygons: list[Polygon], max_crop_px: int) -> ContactSheet | None:
-    crops: list[tuple[int, int, np.ndarray]] = []
-    for polygon_index, polygon in enumerate(polygons):
-        crop = crop_polygon_array(image, polygon, max_crop_px)
-        if crop is not None:
-            crops.append((len(crops) + 1, polygon_index, crop))
-        else:
-            polygons[polygon_index].label = fallback_label(polygon_index)
-
-    if not crops:
-        return None
-
-    tile_size = max(160, min(max_crop_px if max_crop_px > 0 else 512, 512))
-    label_h = 34
-    gap = 12
-    cols = max(1, math.ceil(math.sqrt(len(crops))))
-    rows = math.ceil(len(crops) / cols)
-    sheet_w = cols * tile_size + (cols + 1) * gap
-    sheet_h = rows * (tile_size + label_h) + (rows + 1) * gap
-    sheet = np.full((sheet_h, sheet_w, 3), 255, dtype=np.uint8)
-
-    entries: list[tuple[int, int]] = []
-    for pos, (sheet_id, polygon_index, crop) in enumerate(crops):
-        row, col = divmod(pos, cols)
-        x = gap + col * (tile_size + gap)
-        y = gap + row * (tile_size + label_h + gap)
-        cv2.putText(
-            sheet,
-            str(sheet_id),
-            (x + 8, y + 24),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.75,
-            (0, 0, 0),
-            2,
-            cv2.LINE_AA,
-        )
-
-        h, w = crop.shape[:2]
-        scale = min(tile_size / max(1, w), tile_size / max(1, h), 1.0)
-        resized_w = max(1, int(w * scale))
-        resized_h = max(1, int(h * scale))
-        resized = cv2.resize(crop, (resized_w, resized_h), interpolation=cv2.INTER_AREA)
-        paste_x = x + (tile_size - resized_w) // 2
-        paste_y = y + label_h + (tile_size - resized_h) // 2
-        sheet[paste_y:paste_y + resized_h, paste_x:paste_x + resized_w] = resized
-        entries.append((sheet_id, polygon_index))
-
-    ok, encoded = cv2.imencode(".png", sheet)
-    if not ok:
-        return None
-    return ContactSheet(png=encoded.tobytes(), entries=entries)
 
 
 def crop_polygon_image(image: np.ndarray, polygon: Polygon, max_crop_px: int) -> bytes | None:
@@ -393,6 +427,15 @@ def crop_polygon_image(image: np.ndarray, polygon: Polygon, max_crop_px: int) ->
     ok, encoded = cv2.imencode(".png", crop)
     if not ok:
         return None
+    return encoded.tobytes()
+
+
+def warmup_image_png() -> bytes:
+    image = np.full((64, 64, 3), 255, dtype=np.uint8)
+    cv2.rectangle(image, (18, 18), (46, 46), (0, 0, 0), -1)
+    ok, encoded = cv2.imencode(".png", image)
+    if not ok:
+        raise RuntimeError("failed to encode tool label warmup image")
     return encoded.tobytes()
 
 
@@ -461,45 +504,6 @@ def parse_label_response(response: str) -> str | None:
     if not isinstance(name, str):
         return None
     return validate_label(name)
-
-
-def parse_labels_response(response: str, count: int) -> dict[int, str]:
-    try:
-        start = response.find("{")
-        end = response.rfind("}") + 1
-        if start >= 0 and end > start:
-            response = response[start:end]
-        data = json.loads(response)
-    except (TypeError, json.JSONDecodeError):
-        return {}
-
-    labels = data.get("labels") if isinstance(data, dict) else data
-    if not isinstance(labels, list):
-        return {}
-
-    parsed: dict[int, str] = {}
-    for index, item in enumerate(labels, start=1):
-        label_id = index
-        name: str | None = None
-        if isinstance(item, str):
-            name = item
-        elif isinstance(item, dict):
-            raw_id = item.get("id", index)
-            if isinstance(raw_id, int):
-                label_id = raw_id
-            elif isinstance(raw_id, str) and raw_id.isdigit():
-                label_id = int(raw_id)
-            raw_name = item.get("name") or item.get("label")
-            if isinstance(raw_name, str):
-                name = raw_name
-
-        if label_id < 1 or label_id > count:
-            continue
-        valid = validate_label(name or "")
-        if valid:
-            parsed[label_id] = valid
-
-    return parsed
 
 
 def validate_label(name: str) -> str | None:

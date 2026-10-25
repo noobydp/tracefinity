@@ -1,15 +1,58 @@
 from __future__ import annotations
 
+import math
+import re
+import uuid
 from typing import Literal
 
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.constants import PaperSize
+from app.constants import (
+    MAX_BIN_GRID_CELLS,
+    MAX_BIN_GRID_UNITS,
+    MIN_BIN_GRID_UNITS,
+    PaperSize,
+)
 
 
 class Point(BaseModel):
     x: float
     y: float
+
+    @field_validator("x", "y")
+    @classmethod
+    def validate_finite(cls, v: float) -> float:
+        if not math.isfinite(v):
+            raise ValueError("point coordinate must be finite")
+        return v
+
+
+class CaptureCrop(BaseModel):
+    x: float
+    y: float
+    width: float
+    height: float
+
+    @field_validator("x", "y", "width", "height")
+    @classmethod
+    def validate_finite(cls, v: float) -> float:
+        if not math.isfinite(v):
+            raise ValueError("capture crop value must be finite")
+        return v
+
+    @field_validator("x", "y")
+    @classmethod
+    def validate_origin(cls, v: float) -> float:
+        if v < 0 or v > 1:
+            raise ValueError("capture crop origin must be between 0 and 1")
+        return v
+
+    @field_validator("width", "height")
+    @classmethod
+    def validate_size(cls, v: float) -> float:
+        if v <= 0 or v > 1:
+            raise ValueError("capture crop size must be between 0 and 1")
+        return v
 
 
 class PhotoWarning(BaseModel):
@@ -52,17 +95,27 @@ class UploadResponse(BaseModel):
     session_id: str
     image_url: str
     detected_corners: list[Point] | None
+    image_width: int | None = None
+    image_height: int | None = None
+    corner_source: Literal["detected", "station", "none"] = "none"
+    station_id: str | None = None
 
 
 class CornersRequest(BaseModel):
     corners: list[Point]
     paper_size: PaperSize
+    save_station_name: str | None = None
 
 
 class CornersResponse(BaseModel):
     corrected_image_url: str
     scale_factor: float
     warnings: list[PhotoWarning] = []
+    station: "PhotoStation | None" = None
+
+
+class RedetectCornersResponse(BaseModel):
+    corners: list[Point]
 
 
 class TraceRequest(BaseModel):
@@ -105,9 +158,11 @@ class BinParams(BaseModel):
 
     @model_validator(mode="after")
     def normalize_partial_bins_values(self) -> "BinParams":
-        import math
-
         expected = math.ceil(self.grid_x) * math.ceil(self.grid_y)
+        if expected > MAX_BIN_GRID_CELLS:
+            raise ValueError(
+                f"grid footprint must not exceed {MAX_BIN_GRID_CELLS} cells"
+            )
         if len(self.partial_bins_values) != expected:
             self.partial_bins_values = [True] * expected
         if not self.partial_bins_connect:
@@ -119,9 +174,10 @@ class BinParams(BaseModel):
     @field_validator("grid_x", "grid_y")
     @classmethod
     def validate_grid(cls, v: float) -> float:
-        if v < 1 or v > 10:
-            raise ValueError("grid size must be between 1 and 10")
-        # must be a multiple of 0.5
+        if v < MIN_BIN_GRID_UNITS:
+            raise ValueError(f"grid size must be at least {MIN_BIN_GRID_UNITS:g} unit")
+        if v > MAX_BIN_GRID_UNITS:
+            raise ValueError(f"grid size must not exceed {MAX_BIN_GRID_UNITS:g} units per axis")
         if v * 2 != int(v * 2):
             raise ValueError("grid size must be a multiple of 0.5")
         return v
@@ -143,8 +199,8 @@ class BinParams(BaseModel):
     @field_validator("cutout_depth")
     @classmethod
     def validate_depth(cls, v: float) -> float:
-        if v < 1 or v > 200:
-            raise ValueError("cutout depth must be between 1 and 200mm")
+        if v < 0.25 or v > 200:
+            raise ValueError("cutout depth must be between 0.25 and 200mm")
         return v
 
     @field_validator("cutout_clearance")
@@ -221,6 +277,9 @@ class Session(BaseModel):
     tags: list[str] = []
     created_at: str | None = None
     original_image_path: str | None = None
+    original_image_width: int | None = None
+    original_image_height: int | None = None
+    capture_crop: CaptureCrop | None = None
     corrected_image_path: str | None = None
     mask_image_path: str | None = None
     corners: list[Point] | None = None
@@ -257,6 +316,81 @@ class SessionUpdateRequest(BaseModel):
 
 class StatusResponse(BaseModel):
     status: str
+
+
+# --- photo stations ---
+
+PhotoStationMatchStatus = Literal["exact", "near", "far"]
+
+
+class PhotoStation(BaseModel):
+    id: str
+    name: str
+    image_width: int
+    image_height: int
+    image_path: str | None = None
+    capture_crop: CaptureCrop | None = None
+    paper_size: PaperSize
+    corners: list[Point]
+    created_at: str | None = None
+    updated_at: str | None = None
+    last_used_at: str | None = None
+
+    @field_validator("image_width", "image_height")
+    @classmethod
+    def validate_image_dimension(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("station image dimensions must be positive")
+        return v
+
+    @field_validator("corners")
+    @classmethod
+    def validate_corners(cls, v: list[Point]) -> list[Point]:
+        if len(v) != 4:
+            raise ValueError("station corners must contain four points")
+        return v
+
+
+class PhotoStationSuggestion(BaseModel):
+    station: PhotoStation
+    match_status: PhotoStationMatchStatus
+    width_delta_percent: float = 0.0
+    height_delta_percent: float = 0.0
+    max_corner_drift_px: float | None = None
+    max_corner_drift_percent: float | None = None
+    warnings: list[str] = []
+
+
+class PhotoStationListResponse(BaseModel):
+    stations: list[PhotoStation]
+
+
+class PhotoStationSuggestionsResponse(BaseModel):
+    suggestions: list[PhotoStationSuggestion]
+    station_count: int
+
+
+class PhotoStationCreateRequest(BaseModel):
+    name: str
+    session_id: str
+    paper_size: PaperSize | None = None
+    corners: list[Point] | None = None
+
+
+class PhotoStationUpdateRequest(BaseModel):
+    name: str | None = None
+    paper_size: PaperSize | None = None
+    corners: list[Point] | None = None
+
+
+class ReuseCornersRequest(BaseModel):
+    station_id: str
+
+
+class ReuseCornersResponse(BaseModel):
+    corners: list[Point]
+    paper_size: PaperSize
+    suggestion: PhotoStationSuggestion
 
 
 # --- tool library ---
@@ -351,6 +485,93 @@ ProjectHealthCode = Literal[
     "tool_extra_project_id",
 ]
 
+# a project grid describes a whole drawer, so it is much larger than a single bin
+MAX_TARGET_GRID = 40
+
+
+def _check_target_grid(v: float | None) -> float | None:
+    """Validate an optional drawer grid size in gridfinity units."""
+    if v is None:
+        return v
+    if v < 1 or v > MAX_TARGET_GRID:
+        raise ValueError(f"grid size must be between 1 and {MAX_TARGET_GRID}")
+    if v * 2 != int(v * 2):
+        raise ValueError("grid size must be a multiple of 0.5")
+    return v
+
+
+PLACEMENT_ROTATIONS = (0, 90, 180, 270)
+
+
+class ProjectBinPlacement(BaseModel):
+    """Position of one bin on the project drawer grid, in gridfinity units from the top-left.
+
+    A bin may be placed more than once, so placements carry their own id.
+    """
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    bin_id: str
+    x: float = 0
+    y: float = 0
+    rotation: int = 0  # 90 and 270 swap the bin footprint
+    color: str | None = None  # #rrggbb highlight; None uses the default bin colour
+
+    @field_validator("color")
+    @classmethod
+    def validate_color(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        value = v.strip().lower()
+        if not re.fullmatch(r"#[0-9a-f]{6}", value):
+            raise ValueError("colour must be a #rrggbb hex value")
+        return value
+
+    @field_validator("x", "y")
+    @classmethod
+    def validate_offset(cls, v: float) -> float:
+        if v < 0 or v > MAX_TARGET_GRID:
+            raise ValueError(f"placement offset must be between 0 and {MAX_TARGET_GRID}")
+        if v * 2 != int(v * 2):
+            raise ValueError("placement offset must be a multiple of 0.5")
+        return v
+
+    @field_validator("rotation")
+    @classmethod
+    def validate_rotation(cls, v: int) -> int:
+        if v not in PLACEMENT_ROTATIONS:
+            raise ValueError("placement rotation must be 0, 90, 180 or 270")
+        return v
+
+
+DEFAULT_SKETCH_NAME = "Drawer plan"
+
+_SKETCH_NAMESPACE = uuid.UUID("6f1a6f4c-1d8e-5a9b-9a21-0f2a4f6f7c10")
+
+
+def legacy_sketch_id(project_id: str | None) -> str:
+    """Id of the sketch a pre-multi-sketch project migrates into."""
+    if not project_id:
+        return str(uuid.uuid4())
+    return str(uuid.uuid5(_SKETCH_NAMESPACE, f"legacy-sketch:{project_id}"))
+
+
+class ProjectSketch(BaseModel):
+    """One drawer plan: a grid plus the bins placed on it. A project may hold several."""
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str = DEFAULT_SKETCH_NAME
+    target_grid_x: float | None = None
+    target_grid_y: float | None = None
+    bin_layout: list[ProjectBinPlacement] = []
+    created_at: str | None = None
+    updated_at: str | None = None
+
+    @field_validator("target_grid_x", "target_grid_y")
+    @classmethod
+    def validate_target_grid(cls, v: float | None) -> float | None:
+        return _check_target_grid(v)
+
+
 class BinProject(BaseModel):
     id: str
     name: str
@@ -358,23 +579,38 @@ class BinProject(BaseModel):
     status: ProjectStatus = "active"
     tool_ids: list[str] = []
     bin_ids: list[str] = []
-    target_grid_x: float | None = None
-    target_grid_y: float | None = None
+    sketches: list[ProjectSketch] = []
     default_bin_config: BinDefaults | None = None
     notes: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
 
-    @field_validator("target_grid_x", "target_grid_y")
+    @model_validator(mode="before")
     @classmethod
-    def validate_target_grid(cls, v: float | None) -> float | None:
-        if v is None:
-            return v
-        if v < 1 or v > 10:
-            raise ValueError("grid size must be between 1 and 10")
-        if v * 2 != int(v * 2):
-            raise ValueError("grid size must be a multiple of 0.5")
-        return v
+    def migrate_single_sketch(cls, data):
+        """Fold a pre-multi-sketch record (grid + layout on the project) into one sketch."""
+        if not isinstance(data, dict):
+            return data
+        legacy_keys = ("target_grid_x", "target_grid_y", "bin_layout")
+        if not any(key in data for key in legacy_keys):
+            return data
+
+        data = dict(data)
+        grid_x = data.pop("target_grid_x", None)
+        grid_y = data.pop("target_grid_y", None)
+        layout = data.pop("bin_layout", None) or []
+        if not data.get("sketches") and (layout or grid_x is not None or grid_y is not None):
+            data["sketches"] = [{
+                "id": legacy_sketch_id(data.get("id")),
+                "name": DEFAULT_SKETCH_NAME,
+                "target_grid_x": grid_x,
+                "target_grid_y": grid_y,
+                "bin_layout": layout,
+                "created_at": data.get("created_at"),
+                "updated_at": data.get("updated_at"),
+            }]
+        return data
+
 
 class BinProjectDetail(BinProject):
     placed_tool_ids: list[str] = []
@@ -390,8 +626,7 @@ class BinProjectSummary(BaseModel):
     bin_count: int = 0
     placed_count: int = 0
     unplaced_count: int = 0
-    target_grid_x: float | None = None
-    target_grid_y: float | None = None
+    sketch_count: int = 0
     created_at: str | None = None
     updated_at: str | None = None
 
@@ -404,43 +639,40 @@ class BinProjectCreateRequest(BaseModel):
     name: str
     description: str | None = None
     status: ProjectStatus = "active"
-    target_grid_x: float | None = None
-    target_grid_y: float | None = None
     default_bin_config: BinDefaults | None = None
     notes: str | None = None
     tool_ids: list[str] = []
-
-    @field_validator("target_grid_x", "target_grid_y")
-    @classmethod
-    def validate_target_grid(cls, v: float | None) -> float | None:
-        if v is None:
-            return v
-        if v < 1 or v > 10:
-            raise ValueError("grid size must be between 1 and 10")
-        if v * 2 != int(v * 2):
-            raise ValueError("grid size must be a multiple of 0.5")
-        return v
 
 
 class BinProjectUpdateRequest(BaseModel):
     name: str | None = None
     description: str | None = None
     status: ProjectStatus | None = None
-    target_grid_x: float | None = None
-    target_grid_y: float | None = None
     default_bin_config: BinDefaults | None = None
     notes: str | None = None
+
+
+class ProjectSketchCreateRequest(BaseModel):
+    name: str | None = None
+    target_grid_x: float | None = None
+    target_grid_y: float | None = None
 
     @field_validator("target_grid_x", "target_grid_y")
     @classmethod
     def validate_target_grid(cls, v: float | None) -> float | None:
-        if v is None:
-            return v
-        if v < 1 or v > 10:
-            raise ValueError("grid size must be between 1 and 10")
-        if v * 2 != int(v * 2):
-            raise ValueError("grid size must be a multiple of 0.5")
-        return v
+        return _check_target_grid(v)
+
+
+class ProjectSketchUpdateRequest(BaseModel):
+    name: str | None = None
+    target_grid_x: float | None = None
+    target_grid_y: float | None = None
+    bin_layout: list[ProjectBinPlacement] | None = None
+
+    @field_validator("target_grid_x", "target_grid_y")
+    @classmethod
+    def validate_target_grid(cls, v: float | None) -> float | None:
+        return _check_target_grid(v)
 
 
 class BinProjectToolsRequest(BaseModel):
@@ -517,6 +749,8 @@ class BinSummary(BaseModel):
     has_stl: bool
     grid_x: float = 2
     grid_y: float = 2
+    height_units: int = 4
+    half_grid_base: bool = False
     preview_tools: list[BinPreviewTool] = []
 
 

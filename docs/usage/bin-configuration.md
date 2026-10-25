@@ -6,10 +6,10 @@ Gridfinity is a modular storage system where bins snap into a baseplate grid. Ea
 
 | Setting | Range | Default | Notes |
 |-|-|-|-|
-| Grid width | 1-10 u | 2 | Each unit is 42mm |
-| Grid depth | 1-10 u | 2 | |
-| Height | 1-20 u | 4 | Each unit is 7mm + 4.75mm base |
-| Cutout depth | 5mm-max | 20mm | Max depends on height and stacking lip |
+| Grid width | 1-25 u | 2 | Each unit is 42mm; the grid footprint is limited to 100 cells |
+| Grid depth | 1-25 u | 2 | The available maximum adjusts with the width |
+| Height | 1-20 u | 4 | Each unit is 7mm, including the 4.75mm base; lip and raised rim add height above this |
+| Cutout depth | 5mm-max (0.25mm at 1u) | 20mm | Max is height × 7mm − 4.75mm base − 2mm floor |
 | Clearance | 0-5mm | 1.0mm | Gap around tool outlines |
 | Cutout chamfer | 0-3mm | 0mm | Bevel on top edge of pockets |
 | Magnet diameter | 3-10mm | 6mm | Standard Gridfinity magnets are 6x2mm |
@@ -18,13 +18,19 @@ Gridfinity is a modular storage system where bins snap into a baseplate grid. Ea
 | Insert fit | 0-1mm | 0.2mm | Clearance shaved off insert edges so it drops into the pocket |
 | Bed size | 150-500mm | 256mm | For auto-splitting oversized bins |
 
+A 2u bin allows up to 7.25mm cutout depth; a 3u bin allows up to 14.25mm,
+with or without the stacking lip. A 1u bin is limited to a shallow 0.25mm
+pocket to preserve the base and 2mm floor. Increase the bin height for deeper
+pockets. Insert thickness is added to the requested depth, then capped at the
+same physical maximum.
+
 ## Toggles
 
 **Magnet holes** -- recesses in the bin base for magnets. On by default.
 
 **Corners only** -- magnet holes only at the four outer corners instead of all grid positions.
 
-**Stacking lip** -- raised rim so bins stack securely. On by default. Adds approximately 4.4mm to total height and reduces maximum cutout depth.
+**Stacking lip** -- raised rim so bins stack securely. On by default. Adds approximately 4.4mm to total height without reducing maximum cutout depth.
 
 **Raise lip** -- extends the wall and stacking lip upward by this many units (7mm each) above the floor face, leaving the interior open. Use it for shallow bins where a tool protrudes above the floor: the raised lip lets a stacked bin clear the protruding tool. 0 = standard (lip sits at the floor face). Shown only when the stacking lip is on.
 
@@ -39,6 +45,8 @@ Gridfinity is a modular storage system where bins snap into a baseplate grid. Ea
 ## Auto grid sizing
 
 On by default. When enabled, grid width and depth automatically adjust to fit all placed tools, and the grid width/depth sliders are disabled. Toggle it off to set grid size manually; the sliders become active again.
+
+Bins can be up to 25 units on either axis with a 100-cell grid footprint. Long, narrow bins are supported and are split according to the configured bed size. If an auto-sized layout exceeds either safety limit, Tracefinity keeps saving the tool placement but pauses preview and export until the tools are reduced or rearranged.
 
 ## Default bin settings
 

@@ -4,7 +4,8 @@ import io
 import pytest
 from PIL import Image
 
-from app.services.image_ingest import ingest_image
+from app.models.schemas import CaptureCrop
+from app.services.image_ingest import ImageTooLargeError, ingest_image
 
 
 def _jpeg(width: int, height: int, orientation: int | None = None) -> bytes:
@@ -59,6 +60,27 @@ class TestOrientation:
 
 
 class TestDownscale:
+    def test_normalises_pillow_decompression_bomb_error(self, monkeypatch):
+        def reject(*args, **kwargs):
+            raise Image.DecompressionBombError("too many pixels")
+
+        monkeypatch.setattr(Image, "open", reject)
+
+        with pytest.raises(
+            ImageTooLargeError,
+            match="image dimensions exceed the configured limit",
+        ):
+            ingest_image(b"not decoded", ".png")
+
+    def test_rejects_image_over_pixel_limit_before_resize(self):
+        content = _jpeg(11, 10)
+
+        with pytest.raises(
+            ImageTooLargeError,
+            match=r"image has 110 pixels; maximum is 100",
+        ):
+            ingest_image(content, ".jpg", max_dim=8, max_pixels=100)
+
     def test_ratio_matches_actual_resize(self):
         content = _jpeg(2402, 3300)
 
@@ -89,3 +111,21 @@ class TestDownscale:
         img = _open(out)
         assert (img.width, img.height) == (2402, 3300)
         assert ratio == 1.0
+
+    def test_crop_happens_before_downscale(self):
+        img = Image.new("RGB", (4032, 3024), "green")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+
+        out, ext, ratio = ingest_image(
+            buf.getvalue(),
+            ".png",
+            max_dim=2048,
+            capture_crop=CaptureCrop(x=0, y=0, width=0.5, height=1),
+        )
+
+        cropped = _open(out)
+        assert ext == ".png"
+        assert cropped.height == 2048
+        assert cropped.width == round(2016 * (2048 / 3024))
+        assert ratio == pytest.approx(2048 / 3024)

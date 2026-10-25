@@ -34,13 +34,26 @@ def test_grid_rejects_non_half_increment():
 
 
 def test_grid_rejects_below_minimum():
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="at least 1 unit"):
         BinParams(grid_x=0.5)
 
 
 def test_grid_rejects_above_maximum():
-    with pytest.raises(ValidationError):
-        BinParams(grid_x=10.5)
+    with pytest.raises(ValidationError, match="not exceed 25 units per axis"):
+        BinParams(grid_x=25.5)
+
+
+@pytest.mark.parametrize(("grid_x", "grid_y"), [(20, 5), (25, 4), (10.5, 9)])
+def test_grid_accepts_long_narrow_footprints(grid_x: float, grid_y: float):
+    params = BinParams(grid_x=grid_x, grid_y=grid_y)
+    assert params.grid_x == grid_x
+    assert params.grid_y == grid_y
+
+
+@pytest.mark.parametrize(("grid_x", "grid_y"), [(20, 5.5), (10.5, 10), (25, 4.5)])
+def test_grid_rejects_footprints_over_100_cells(grid_x: float, grid_y: float):
+    with pytest.raises(ValidationError, match="footprint must not exceed 100 cells"):
+        BinParams(grid_x=grid_x, grid_y=grid_y)
 
 
 # ── cell layout ──────────────────────────────────────────────────────────────
@@ -123,14 +136,16 @@ def test_half_grid_base_more_cells_than_standard(tmp_path: Path):
     # both should produce valid geometry
     assert s_body.volume() > 0
     assert h_body.volume() > 0
-    # Blank bins now generate as container cavities, so the base pattern can
-    # account for more of the remaining material than it did for solid shells.
-    # The invariant for half-grid bases is the shared outer envelope.
+    # Blank cavities change the volume ratio. Both variants retain the same
+    # outer envelope and must still have distinct base-pad patterns.
     s_bb = s_body.bounding_box()
     h_bb = h_body.bounding_box()
     assert h_bb[3] - h_bb[0] == pytest.approx(s_bb[3] - s_bb[0])
     assert h_bb[4] - h_bb[1] == pytest.approx(s_bb[4] - s_bb[1])
     assert h_bb[5] - h_bb[2] == pytest.approx(s_bb[5] - s_bb[2])
+    # Below the shared floor each pad must remain a distinct base cell.
+    assert len(s_body.slice(0.4).to_polygons()) == 4
+    assert len(h_body.slice(0.4).to_polygons()) == 16
 
 
 def test_half_unit_bin_correct_outer_dimensions(tmp_path: Path):

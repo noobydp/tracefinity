@@ -12,6 +12,8 @@ from app.constants import PAPER_SIZES, PaperSize
 logger = logging.getLogger(__name__)
 
 PX_PER_MM = 10
+# a saliency mask this large is the sheet, not a tool lying on it (#213)
+TOOL_MASK_MAX_FRACTION = 0.4
 
 
 def _quad_aspect_ratio(
@@ -132,14 +134,26 @@ class ImageProcessor:
         return mask
 
     def detect_paper_corners(self, image_path: str) -> list[tuple[float, float]] | None:
-        """detect paper corners, masking out tools when U2-Net is available."""
+        """detect paper corners, masking out tools when U2-Net is available.
+        on a dark background the sheet itself is the salient object, so a
+        mask covering most of the frame is ignored and a masked miss retries
+        unmasked instead of reporting no corners (#213)."""
         img = cv2.imread(image_path)
         if img is None:
             return None
 
         if self._tool_mask_session is not None:
             tool_mask = self._get_tool_mask(image_path)
-            img[tool_mask > 0] = [0, 0, 0]
+            fraction = np.count_nonzero(tool_mask) / tool_mask.size
+            if fraction > TOOL_MASK_MAX_FRACTION:
+                logger.info("tool mask covers %.0f%% of the frame, likely the sheet; detecting unmasked", fraction * 100)
+            else:
+                masked = img.copy()
+                masked[tool_mask > 0] = [0, 0, 0]
+                corners = self._detect_paper(masked)
+                if corners:
+                    return corners
+                logger.info("paper not found with tools masked; retrying unmasked")
 
         return self._detect_paper(img)
 
@@ -152,14 +166,22 @@ class ImageProcessor:
 
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
+        # Closed sheet edges preserve perspective and survive illumination
+        # gradients that truncate or merge a brightness-thresholded region.
+        edge_candidates = [self._detect_canny(gray, 50, 150), self._detect_canny(gray, 75, 200)]
+        for edges in edge_candidates:
+            result = self._find_paper_contour(edges, min_area, max_area, edge_margin, h, w)
+            if result and self._has_paper_fill(gray, result):
+                return result
+
         bright_result = self._detect_bright_region(img, gray, min_area, max_area, edge_margin, h, w)
         if bright_result:
             return bright_result
 
         strategies = [
-            self._detect_canny(gray, 50, 150),
+            edge_candidates[0],
             self._detect_canny(gray, 30, 100),
-            self._detect_canny(gray, 75, 200),
+            edge_candidates[1],
             self._detect_adaptive_threshold(gray),
             self._detect_saturation(img),
         ]
@@ -172,6 +194,16 @@ class ImageProcessor:
                 return result
 
         return None
+
+    def _has_paper_fill(self, gray: np.ndarray, corners: list[tuple[float, float]]) -> bool:
+        """A strong tool outline must not displace a faint paper boundary."""
+        region = np.zeros(gray.shape, dtype=np.uint8)
+        cv2.fillPoly(region, [np.asarray(corners, dtype=np.int32)], 255)
+        area = cv2.countNonZero(region)
+        if not area:
+            return False
+        bright = cv2.inRange(gray, 180, 255)
+        return cv2.countNonZero(cv2.bitwise_and(bright, region)) / area >= 0.35
 
     def _detect_bright_region(
         self, img: np.ndarray, gray: np.ndarray,
@@ -477,4 +509,3 @@ class ImageProcessor:
         results["contour_areas"] = sorted([cv2.contourArea(c) for c in contours], reverse=True)[:10]
 
         return results
-

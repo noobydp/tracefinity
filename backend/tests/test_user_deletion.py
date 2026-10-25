@@ -13,31 +13,35 @@ import app.api.user_routes as user_routes
 import app.main as main_mod
 from app.config import ensure_user_dirs, settings
 from app.main import app
-from app.models.schemas import BinModel, BinProject, Session, Tool
+from app.models.schemas import BinModel, BinProject, PhotoStation, Point, Session, Tool
 from app.services.ai_tracer import AITracer
 from app.services.store_errors import StoreClosedError
 
 # valid cuid per auth._USER_ID_RE
 USER_ID = "cjld2cjxh0000qzrmn831i7rn"
+PROXY_SECRET = "test-proxy-secret"
+USER_HEADERS = {"x-user-id": USER_ID, "x-proxy-secret": PROXY_SECRET}
 
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     # routes imports the same settings object, so one patch covers both
     monkeypatch.setattr(settings, "storage_path", tmp_path)
-    # test_proxy_middleware reloads app.main with a secret; pin auth off
-    monkeypatch.setattr(main_mod.settings, "proxy_secret", None)
+    # Exercise per-user behavior through the same trusted-proxy contract as production.
+    monkeypatch.setattr(main_mod.settings, "proxy_secret", PROXY_SECRET)
     routes._store_cache.clear()
     routes._project_store_cache.clear()
+    routes._photo_station_store_cache.clear()
     ensure_user_dirs(tmp_path / "default")
     yield TestClient(app)
     # don't leak this test's user id into later tests
     routes._store_cache.clear()
     routes._project_store_cache.clear()
+    routes._photo_station_store_cache.clear()
 
 
 def test_delete_user_evicts_project_store_cache(client):
-    headers = {"x-user-id": USER_ID}
+    headers = USER_HEADERS
 
     resp = client.post("/api/bin-projects", json={"name": "Old drawer"}, headers=headers)
     assert resp.status_code == 200
@@ -47,10 +51,11 @@ def test_delete_user_evicts_project_store_cache(client):
 
     assert USER_ID not in routes._store_cache
     assert USER_ID not in routes._project_store_cache
+    assert USER_ID not in routes._photo_station_store_cache
 
 
 def test_deleted_projects_do_not_resurrect_on_next_write(client, tmp_path):
-    headers = {"x-user-id": USER_ID}
+    headers = USER_HEADERS
 
     resp = client.post("/api/bin-projects", json={"name": "Old drawer"}, headers=headers)
     assert resp.status_code == 200
@@ -72,6 +77,8 @@ def test_deleted_projects_do_not_resurrect_on_next_write(client, tmp_path):
 def _capture_store(kind: str):
     if kind == "project":
         return routes.get_project_store(USER_ID)
+    if kind == "photo_station":
+        return routes.get_photo_station_store(USER_ID)
     session_store, tool_store, bin_store = routes.get_stores(USER_ID)
     return {"session": session_store, "tool": tool_store, "bin": bin_store}[kind]
 
@@ -81,12 +88,28 @@ _STORE_CASES = {
     "tool": ("tools.json", lambda: Tool(id="t1", name="Old tool", points=[])),
     "bin": ("bins.json", lambda: BinModel(id="b1")),
     "project": ("bin-projects.json", lambda: BinProject(id="p1", name="Old project")),
+    "photo_station": (
+        "photo-stations.json",
+        lambda: PhotoStation(
+            id="ps1",
+            name="Old station",
+            image_width=100,
+            image_height=100,
+            paper_size="a4",
+            corners=[
+                Point(x=0, y=0),
+                Point(x=100, y=0),
+                Point(x=100, y=100),
+                Point(x=0, y=100),
+            ],
+        ),
+    ),
 }
 
 
 @pytest.mark.parametrize("kind", sorted(_STORE_CASES))
 def test_captured_store_write_after_deletion_cannot_recreate_data(client, tmp_path, kind):
-    headers = {"x-user-id": USER_ID}
+    headers = USER_HEADERS
     filename, make_record = _STORE_CASES[kind]
 
     captured = _capture_store(kind)
@@ -102,6 +125,7 @@ def test_captured_store_write_after_deletion_cannot_recreate_data(client, tmp_pa
     # must still be unable to write the deleted data back
     routes.get_stores(USER_ID)
     routes.get_project_store(USER_ID)
+    routes.get_photo_station_store(USER_ID)
     assert (tmp_path / USER_ID).exists()
 
     with pytest.raises(StoreClosedError):
@@ -111,7 +135,7 @@ def test_captured_store_write_after_deletion_cannot_recreate_data(client, tmp_pa
 
 
 def test_get_stores_during_deletion_waits_for_rmtree_and_sees_empty_state(client, tmp_path, monkeypatch):
-    headers = {"x-user-id": USER_ID}
+    headers = USER_HEADERS
 
     resp = client.post("/api/bin-projects", json={"name": "Old drawer"}, headers=headers)
     assert resp.status_code == 200
@@ -165,7 +189,7 @@ def test_get_stores_during_deletion_waits_for_rmtree_and_sees_empty_state(client
 def test_delete_mid_trace_does_not_recreate_user_dir_or_mask(client, tmp_path, monkeypatch):
     """a trace awaiting its model call must not write the mask (recreating
     the user dir) after the user is deleted mid-flight (issue #160)"""
-    headers = {"x-user-id": USER_ID}
+    headers = USER_HEADERS
     monkeypatch.setattr(settings, "tracers", None)
     monkeypatch.setattr(settings, "google_api_key", "test-key")
     monkeypatch.setattr(settings, "openrouter_api_key", None)

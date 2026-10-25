@@ -5,6 +5,13 @@ export interface Point {
 
 export type PaperSize = 'a4' | 'letter' | 'a3' | 'tabloid'
 
+export interface CaptureCrop {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
 export interface FingerHole {
   id: string
   x: number
@@ -89,6 +96,20 @@ export interface CornersResponse {
   corrected_image_url: string
   scale_factor: number
   warnings: PhotoWarning[]
+}
+
+export interface PhotoStation {
+  id: string
+  name: string
+  image_width: number
+  image_height: number
+  image_path: string | null
+  capture_crop: CaptureCrop | null
+  paper_size: PaperSize
+  corners: Point[]
+  created_at: string | null
+  updated_at: string | null
+  last_used_at: string | null
 }
 
 export interface TraceResponse {
@@ -201,6 +222,28 @@ export type ProjectHealthCode =
   | 'tool_missing_project_id'
   | 'tool_extra_project_id'
 
+/** Position of one bin on the project drawer grid, in gridfinity units from the top-left. */
+export interface ProjectBinPlacement {
+  id: string
+  bin_id: string
+  x: number
+  y: number
+  rotation: number
+  /** #rrggbb highlight colour, or null for the default bin colour. */
+  color: string | null
+}
+
+/** One drawer plan inside a project: a grid plus the bins placed on it. */
+export interface ProjectSketch {
+  id: string
+  name: string
+  target_grid_x: number | null
+  target_grid_y: number | null
+  bin_layout: ProjectBinPlacement[]
+  created_at: string | null
+  updated_at: string | null
+}
+
 export interface BinProject {
   id: string
   name: string
@@ -210,8 +253,7 @@ export interface BinProject {
   bin_ids: string[]
   placed_tool_ids: string[]
   unplaced_tool_ids: string[]
-  target_grid_x: number | null
-  target_grid_y: number | null
+  sketches: ProjectSketch[]
   default_bin_config: BinDefaults | null
   notes: string | null
   created_at: string | null
@@ -227,8 +269,7 @@ export interface BinProjectSummary {
   bin_count: number
   placed_count: number
   unplaced_count: number
-  target_grid_x: number | null
-  target_grid_y: number | null
+  sketch_count: number
   created_at: string | null
   updated_at: string | null
 }
@@ -288,5 +329,43 @@ export interface BinSummary {
   has_stl: boolean
   grid_x: number
   grid_y: number
+  height_units: number
+  half_grid_base: boolean
   preview_tools: BinPreviewTool[]
+}
+
+export interface AuthStatus {
+  mode: 'native' | 'proxy' | 'open'
+  setup_required: boolean
+  authenticated: boolean
+}
+
+export interface Account {
+  id: string
+  email: string
+  is_admin: boolean
+  disabled: boolean
+  created_at: string
+  totp_enabled: boolean
+}
+
+export interface LoginResult {
+  pending: boolean
+  pending_token: string | null
+  account: Account | null
+}
+
+export interface TwoFactorEnrolment {
+  secret: string
+  otpauth_uri: string
+}
+
+export interface BackupCodes {
+  backup_codes: string[]
+}
+
+export interface CreateUserRequest {
+  email: string
+  password: string
+  is_admin?: boolean
 }

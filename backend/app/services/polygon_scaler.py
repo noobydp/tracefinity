@@ -1,4 +1,5 @@
 import logging
+import math
 
 from shapely.geometry import Polygon as ShapelyPolygon
 from shapely.validation import make_valid
@@ -6,6 +7,10 @@ from shapely.validation import make_valid
 from app.models.schemas import FingerHole, Point, Polygon
 
 logger = logging.getLogger(__name__)
+
+# Two millimetres keeps a smoothed right-angle corner within about 0.4mm.
+# Mirrored in frontend lib/svg.ts; keep preview and generation in lockstep.
+CHAIKIN_CORNER_SPAN_MM = 2.0
 
 
 def smooth_epsilon(level: float) -> float:
@@ -33,6 +38,31 @@ def _chaikin_smooth(
     return result
 
 
+def _add_chaikin_support_points(
+    pts: list[tuple[float, float]], corner_span_mm: float = CHAIKIN_CORNER_SPAN_MM
+) -> list[tuple[float, float]]:
+    """Bound Chaikin's corner influence without sampling straight interiors."""
+    result: list[tuple[float, float]] = []
+    n = len(pts)
+    for i in range(n):
+        p0 = pts[i]
+        p1 = pts[(i + 1) % n]
+        result.append(p0)
+        length = math.dist(p0, p1)
+        if length <= corner_span_mm:
+            continue
+        support_positions = (
+            [0.5]
+            if length <= 2 * corner_span_mm
+            else [corner_span_mm / length, 1 - corner_span_mm / length]
+        )
+        for t in support_positions:
+            result.append(
+                (p0[0] + (p1[0] - p0[0]) * t, p0[1] + (p1[1] - p0[1]) * t)
+            )
+    return result
+
+
 class ScaledFingerHole:
     def __init__(
         self,
@@ -56,6 +86,16 @@ class ScaledFingerHole:
         self.rotation = rotation
         self.depth_override = depth_override
 
+    @classmethod
+    def from_finger_hole(cls, fh: FingerHole, scale: float = 1.0) -> "ScaledFingerHole":
+        """single rebuild path so a new FingerHole field cannot be dropped (#214).
+        radius, width and height are already mm; only the centre scales."""
+        return cls(
+            fh.id, fh.x * scale, fh.y * scale, fh.radius,
+            shape=fh.shape, width_mm=fh.width, height_mm=fh.height,
+            rotation=fh.rotation, depth_override=fh.depth_override,
+        )
+
 
 class ScaledPolygon:
     def __init__(self, id: str, points_mm: list[tuple[float, float]], label: str, finger_holes: list[ScaledFingerHole] = None, interior_rings_mm: list[list[tuple[float, float]]] = None, depth_override: float | None = None):
@@ -76,16 +116,7 @@ class PolygonScaler:
         for poly in polygons:
             points_mm = [(p.x * scale_factor, p.y * scale_factor) for p in poly.points]
             finger_holes = [
-                ScaledFingerHole(
-                    fh.id,
-                    fh.x * scale_factor,
-                    fh.y * scale_factor,
-                    fh.radius,
-                    shape=fh.shape,
-                    width_mm=fh.width,
-                    height_mm=fh.height,
-                    rotation=fh.rotation,
-                )
+                ScaledFingerHole.from_finger_hole(fh, scale_factor)
                 for fh in poly.finger_holes
             ]
             interior_rings_mm = [
@@ -118,16 +149,7 @@ class PolygonScaler:
             )
 
         finger_holes = [
-            FingerHole(
-                id=fh.id,
-                x=fh.x * scale_factor - cx,
-                y=fh.y * scale_factor - cy,
-                radius=fh.radius,
-                width=fh.width,
-                height=fh.height,
-                rotation=fh.rotation,
-                shape=fh.shape,
-            )
+            fh.model_copy(update={"x": fh.x * scale_factor - cx, "y": fh.y * scale_factor - cy})
             for fh in poly.finger_holes
         ]
 
@@ -194,14 +216,19 @@ class PolygonScaler:
         return polygon
 
     def smooth(self, polygon: ScaledPolygon, level: float = 0.5) -> ScaledPolygon:
-        """simplify, chaikin subdivide, then clean near-collinear points.
-        level 0..1 controls simplification aggressiveness before subdivision."""
+        """simplify, bound corner influence, then subdivide and clean.
+        level 0..1 controls simplification aggressiveness before smoothing."""
         pts = polygon.points_mm
         if len(pts) < 4:
             return polygon
         simplified = self.simplify(polygon, tolerance_mm=smooth_epsilon(level))
-        smoothed_pts = _chaikin_smooth(simplified.points_mm)
-        smoothed_rings = [_chaikin_smooth(ring) for ring in simplified.interior_rings_mm]
+        smoothed_pts = _chaikin_smooth(
+            _add_chaikin_support_points(simplified.points_mm)
+        )
+        smoothed_rings = [
+            _chaikin_smooth(_add_chaikin_support_points(ring))
+            for ring in simplified.interior_rings_mm
+        ]
         # clean up dense chaikin output — remove near-collinear points that
         # cause clipper2 chord artifacts, while keeping the smooth shape
         result = ScaledPolygon(polygon.id, smoothed_pts, polygon.label, polygon.finger_holes, smoothed_rings, depth_override=polygon.depth_override)

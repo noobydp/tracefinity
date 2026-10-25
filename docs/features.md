@@ -48,9 +48,9 @@ Reference for AI agents. Check here before suggesting new features or claiming s
 
 ## Bin Configuration
 
-- Grid sizing (width/depth in gridfinity units, 1-10, 0.5-unit increments for 21mm half-grid)
-- Bin height in units (7mm each + 4.75mm base)
-- Cutout depth (5mm to max)
+- Grid sizing (width/depth in gridfinity units, 1-25 per axis and 100 cells total, with 0.5-unit increments for 21mm half-grid)
+- Bin height in units (7mm each, including the base; lip and raised rim add height)
+- Cutout depth (5mm to the height-dependent maximum; 0.25mm at 1u)
 - Clearance (0-5mm extra space around tools)
 - Cutout chamfer toggle
 - Magnet holes (enable/disable, diameter and depth)
@@ -96,6 +96,20 @@ Reference for AI agents. Check here before suggesting new features or claiming s
 - Bulk tool import
 - Bin import (with/without tool reassignment)
 - Filter tool library by project membership
+
+## Drawer Planning
+
+- Several drawer plans per project, each with its own name and grid
+- Optional drawer grid size per plan (width/depth in gridfinity units)
+- 2D top-down drawer sketch with bin footprints, tool outlines and bin height indicators
+- 3D drawer view rendering the generated bin models, with the same camera presets and edge display as the bin preview
+- Drag and drop bins from the project bin list onto the grid
+- Drag to move, rotate in 90 degree steps, duplicate, remove placements
+- Same bin can be placed multiple times
+- Snapping follows each bin's base: full units, or half units for half-grid bins
+- Per-bin highlight colours
+- Auto arrange (largest bins first) and space usage stats
+- Overlap and out-of-drawer warnings
 
 ## Tool Library
 

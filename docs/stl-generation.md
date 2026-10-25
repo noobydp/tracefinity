@@ -4,6 +4,43 @@
 
 STL generation uses manifold3d (mesh booleans, 10-100x faster than OCCT B-rep). The gridfinity shell is constructed from first principles using `CrossSection` extrusions and `batch_boolean` operations. Polygon cutouts, finger holes, magnet holes and text labels are subtracted from the bin body in one pass. Filleted rectangle cutouts use a full-depth rounded-bottom cutter profile with a dynamic fillet radius clamped by both one-third of the rectangle width and half the pocket depth.
 
+## Generation concurrency
+
+STL generation has no concurrency limit by default. Set
+`STL_GENERATION_CONCURRENCY` to a positive integer to cap simultaneous jobs
+within the backend process and reduce peak CPU and memory use. Cached results
+do not consume a generation slot. When every slot is occupied, a request waits
+up to 5 seconds; if no slot becomes available, the API returns `503 Service
+Unavailable` with `Retry-After: 5`.
+
+The limit is per process, not shared across processes or replicas. Tracefinity
+currently runs as a single backend process, so a value of `1` serializes STL
+generation for the standard deployment.
+
+Cached generation keys include `STL_GEOMETRY_VERSION` from the generator. Bump
+it when geometry rules change so existing bins and sessions regenerate their
+previews and exports on the next generation request.
+
+## Export retention
+
+Generated exports are regenerable from the stored polygons and bin config, so
+they are not kept indefinitely. A background sweep runs every 15 minutes and
+deletes export files older than `STL_RETENTION_HOURS` (default 24). Set it to
+`0` to keep exports forever.
+
+The sweep only removes files directly inside each user's `outputs/` directory
+with an export suffix: `.stl`, `.3mf`, `.zip`, and the `.hash` cache marker.
+Photos, traces, tools, bins, projects, and session data are never touched.
+
+Opening a bin page re-requests generation, which either refreshes the existing
+files (cache hit, which also resets their retention clock) or rebuilds them
+from saved state. The bin page's export buttons also recover on demand: a
+download that finds its file purged regenerates the bin and retries. Trace
+pages never request generation, so a purged session-flow export stays gone
+until generation is requested again. A purged export endpoint returns `404`
+with `<artefact> expired; regenerate the bin` when a prior generation is on
+record, and `<artefact> not found` otherwise.
+
 ## Z-Axis Reference Heights
 
 - **Base top**: 4.75mm (three tapered layers: 2.15 + 1.8 + 0.8). Infill starts here.
@@ -11,6 +48,7 @@ STL generation uses manifold3d (mesh booleans, 10-100x faster than OCCT B-rep). 
 - **Raised rim**: with `rim_units > 0`, a hollow perimeter collar extends the wall from the floor face up by `rim_units * 7`mm, leaving the interior open. The stacking lip rides on top of the collar.
 - **Lip base**: `height_units * 7 + rim_units * 7` (= wall top when `rim_units == 0`).
 - **Stacking lip top**: lip base + 4.4mm (d0=1.9 + d1=1.8 + d2=0.7). Do NOT use bounding box max Z.
+- **Maximum pocket depth**: `height_units * 7 - 4.75 - 2`mm, preserving the base and a 2mm floor. The lip and raised rim do not reduce this. At 1u the physical maximum is 0.25mm and takes precedence over the usual 5mm minimum, including for per-cutout overrides and insert allowances.
 - **Pocket extrude margin**: 0.01mm epsilon for boolean cleanliness.
 
 ## Gridfinity Constants
@@ -87,12 +125,30 @@ For NxM bins multiply grid centres by `(ix - (N-1)/2) * 42`.
 ## Bin Auto-Sizing
 
 ```
-grid_units = ceil((tool_dimension + 2*wall + 2*clearance + 0.5) / 42)
+inset = max(wall_thickness, 2.6 if stacking_lip else 0)
+grid_units = ceil((tool_dimension + 2*inset + 2*clearance + 0.5) / 42)
 ```
+
+Half-grid bins round up to the next 0.5 unit instead. Creation, browser
+auto-size, and adding tools reserve the same wall/lip inset used by pocket
+clipping. With the stacking lip enabled, an 80 mm tool at 0.1 mm clearance
+needs 3 whole units (2.5 with half-grid): a 2-unit bin has only 78.3 mm of
+usable interior and would shorten its cavity. Without the lip and with
+1.6 mm walls, that tool fits in 2 units.
+
+Each axis is limited to 25 grid units and the footprint to
+`ceil(grid_x) * ceil(grid_y) <= 100`. The footprint limit bounds geometry
+generation cost while still allowing long, narrow bins. Auto-size reports the
+required dimensions rather than silently shrinking layouts that exceed either
+limit.
 
 ## Bin Splitting
 
 Large bins are split along grid boundaries using manifold3d `split_by_plane`. Diagonal fit check: `(W + H) / sqrt(2) <= bed_size`. Split parts exported as ZIP.
+
+The full bin manifold is generated before splitting, so bed size controls the
+exported piece size rather than the maximum logical bin size or generation
+resource use.
 
 With partial bins in cut mode, separated islands are exported via `decompose` instead of plane cuts when connect mode is off. With connect mode on, bed splitting measures against the full grid size. See **Partial bins** above.
 

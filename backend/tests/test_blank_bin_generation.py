@@ -9,8 +9,6 @@ from app.services.stl_generator_manifold import (
     GF_HEIGHT_UNIT,
     LIP_D0,
     LIP_D2,
-    LIP_D3,
-    LIP_D4,
     ManifoldSTLGenerator,
     _make_blank_bin_cutout,
 )
@@ -46,8 +44,7 @@ def test_blank_bin_cutout_observes_cutout_depth():
     )
     deep = shallow.model_copy(update={"cutout_depth": 14})
     wall_top_z = shallow.height_units * GF_HEIGHT_UNIT
-    lip_deduction = (LIP_D3 + LIP_D4) if shallow.stacking_lip else 0
-    max_depth = wall_top_z - GF_BASE_HEIGHT - 2 - lip_deduction
+    max_depth = wall_top_z - GF_BASE_HEIGHT - 2
 
     _, shallow_depth = _make_blank_bin_cutout(shallow, wall_top_z, max_depth)
     _, deep_depth = _make_blank_bin_cutout(deep, wall_top_z, max_depth)
@@ -56,14 +53,20 @@ def test_blank_bin_cutout_observes_cutout_depth():
     assert deep_depth == 14
 
 
-def test_blank_bin_cutout_uses_stacking_lip_wall_thickness():
+@pytest.mark.parametrize(("stacking_lip", "wall_thickness", "expected_wall"), [
+    (False, 1.6, 1.6),
+    (False, 5, 5),
+    (True, 1.6, LIP_D0 + LIP_D2),
+    (True, 5, 5),
+])
+def test_blank_bin_cutout_respects_wall_and_lip(stacking_lip, wall_thickness, expected_wall):
     config = GenerateRequest(
         grid_x=2,
         grid_y=1,
         height_units=4,
         magnets=False,
-        stacking_lip=False,
-        wall_thickness=5,
+        stacking_lip=stacking_lip,
+        wall_thickness=wall_thickness,
         cutout_depth=8,
     )
     wall_top_z = config.height_units * GF_HEIGHT_UNIT
@@ -72,9 +75,22 @@ def test_blank_bin_cutout_uses_stacking_lip_wall_thickness():
     cutter, _ = _make_blank_bin_cutout(config, wall_top_z, max_depth)
     min_x, min_y, _, max_x, max_y, _ = cutter.bounding_box()
 
-    expected_wall = LIP_D0 + LIP_D2
     assert max_x - min_x == pytest.approx(config.grid_x * GF_GRID - 0.5 - 2 * expected_wall)
     assert max_y - min_y == pytest.approx(config.grid_y * GF_GRID - 0.5 - 2 * expected_wall)
+
+
+@pytest.mark.parametrize("stacking_lip", [False, True])
+@pytest.mark.parametrize("height_units", [1, 3])
+def test_blank_bin_maximum_depth_preserves_floor(tmp_path, stacking_lip, height_units):
+    config = GenerateRequest(
+        grid_x=2, grid_y=1, height_units=height_units, magnets=False,
+        stacking_lip=stacking_lip, cutout_depth=100, bed_size=0,
+    )
+    body, _ = ManifoldSTLGenerator().generate_bin([], config, str(tmp_path / "floor.stl"))
+    floor_z = GF_BASE_HEIGHT + 2
+    # An actual cross-section below the floor is solid; above it is a cavity.
+    assert len(body.slice(floor_z - 0.05).to_polygons()) == 1
+    assert len(body.slice(floor_z + 0.05).to_polygons()) == 2
 
 
 def test_deeper_blank_bin_cutout_removes_more_material(tmp_path: Path):

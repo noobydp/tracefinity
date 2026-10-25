@@ -1,6 +1,7 @@
 import type {
   UploadResponse,
   CornersResponse,
+  PhotoStation,
   TraceResponse,
   GenerateResponse,
   Point,
@@ -13,20 +14,32 @@ import type {
   ToolSummary,
   BinProject,
   BinProjectSummary,
+  ProjectBinPlacement,
   ProjectHealthResponse,
+  ProjectSketch,
   ProjectStatus,
   BinData,
   BinSummary,
   PlacedTool,
   TextLabel,
   PaperSize,
+  AuthStatus,
+  Account,
+  LoginResult,
+  TwoFactorEnrolment,
+  BackupCodes,
+  CreateUserRequest,
 } from '@/types'
 
 export class ApiError extends Error {
   status: number
-  constructor(message: string, status: number) {
+  // stable identifier from the backend where one is offered; branch on this
+  // rather than on the message text
+  code?: string
+  constructor(message: string, status: number, code?: string) {
     super(message)
     this.status = status
+    this.code = code
   }
 }
 
@@ -36,11 +49,49 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL === ''
   ? ''
   : (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000')
 
+// paths where a 401 is part of the flow, not a lost login
+const AUTH_PAGES = ['/login', '/setup']
+
+// object seam so tests can observe the redirect; jsdom's window.location
+// is unforgeable and cannot be stubbed directly
+export const navigation = {
+  toLogin() {
+    window.location.assign('/login')
+  },
+  // full navigation on auth changes so every cached query restarts
+  toHome() {
+    window.location.assign('/')
+  },
+  // destination has already been checked by the login server page
+  afterLogin(destination: string) {
+    window.location.assign(destination)
+  },
+}
+
+function redirectToLogin() {
+  if (typeof window === 'undefined') return
+  if (AUTH_PAGES.includes(window.location.pathname)) return
+  navigation.toLogin()
+}
+
+async function throwApiError(res: Response): Promise<never> {
+  if (res.status === 401) redirectToLogin()
+  const error = await res.json().catch(() => ({ detail: 'request failed' }))
+  // detail is a plain string on most endpoints; the auth flow sends
+  // { code, message } where the client needs to tell failures apart
+  const detail = error?.detail
+  if (detail && typeof detail === 'object') {
+    throw new ApiError(detail.message || 'request failed', res.status, detail.code)
+  }
+  throw new ApiError(detail || 'request failed', res.status)
+}
+
 async function fetchApi<T>(
   path: string,
   options?: RequestInit
 ): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
+    credentials: 'include',
     ...options,
     headers: {
       'Content-Type': 'application/json',
@@ -49,18 +100,19 @@ async function fetchApi<T>(
   })
 
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ detail: 'request failed' }))
-    throw new ApiError(error.detail || 'request failed', res.status)
+    return throwApiError(res)
   }
 
+  if (res.status === 204) {
+    return undefined as T
+  }
   return res.json()
 }
 
 async function fetchForm<T>(path: string, body: FormData): Promise<T> {
-  const res = await fetch(`${API_URL}${path}`, { method: 'POST', body })
+  const res = await fetch(`${API_URL}${path}`, { method: 'POST', body, credentials: 'include' })
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: 'request failed' }))
-    throw new ApiError(err.detail || 'request failed', res.status)
+    return throwApiError(res)
   }
   return res.json()
 }
@@ -74,7 +126,7 @@ export async function uploadImage(file: File): Promise<UploadResponse> {
 export async function setCorners(
   sessionId: string,
   corners: Point[],
-  paperSize: PaperSize
+  paperSize: PaperSize,
 ): Promise<CornersResponse> {
   return fetchApi(`/api/sessions/${sessionId}/corners`, {
     method: 'POST',
@@ -87,7 +139,13 @@ export interface TracerInfo {
   label: string
 }
 
-export async function getAvailableKeys(): Promise<{ google: boolean; provider: string | null; provider_label: string | null; tracers: TracerInfo[] }> {
+export async function getAvailableKeys(): Promise<{
+  google: boolean
+  provider: string | null
+  provider_label: string | null
+  tracers: TracerInfo[]
+  photo_stations: boolean
+}> {
   return fetchApi('/api/api-keys')
 }
 
@@ -272,8 +330,6 @@ export async function updateProject(
     description?: string | null
     status?: ProjectStatus
     notes?: string | null
-    target_grid_x?: number | null
-    target_grid_y?: number | null
     default_bin_config?: BinDefaults | null
   }
 ): Promise<BinProject> {
@@ -281,6 +337,36 @@ export async function updateProject(
     method: 'PATCH',
     body: JSON.stringify(updates),
   })
+}
+
+export async function createProjectSketch(
+  projectId: string,
+  sketch: { name?: string; target_grid_x?: number | null; target_grid_y?: number | null } = {},
+): Promise<ProjectSketch> {
+  return fetchApi(`/api/bin-projects/${projectId}/sketches`, {
+    method: 'POST',
+    body: JSON.stringify(sketch),
+  })
+}
+
+export async function updateProjectSketch(
+  projectId: string,
+  sketchId: string,
+  updates: {
+    name?: string
+    target_grid_x?: number | null
+    target_grid_y?: number | null
+    bin_layout?: ProjectBinPlacement[]
+  },
+): Promise<ProjectSketch> {
+  return fetchApi(`/api/bin-projects/${projectId}/sketches/${sketchId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(updates),
+  })
+}
+
+export async function deleteProjectSketch(projectId: string, sketchId: string): Promise<void> {
+  await fetchApi(`/api/bin-projects/${projectId}/sketches/${sketchId}`, { method: 'DELETE' })
 }
 
 export async function deleteProject(projectId: string): Promise<void> {
@@ -300,6 +386,33 @@ export async function removeToolFromProject(projectId: string, toolId: string): 
 
 export async function getProjectHealth(projectId: string): Promise<ProjectHealthResponse> {
   return fetchApi(`/api/bin-projects/${projectId}/health`)
+}
+
+export async function listPhotoStations(): Promise<PhotoStation[]> {
+  const res = await fetchApi<{ stations: PhotoStation[] }>('/api/photo-stations')
+  return res.stations
+}
+
+export async function getPhotoStation(stationId: string): Promise<PhotoStation> {
+  return fetchApi(`/api/photo-stations/${stationId}`)
+}
+
+export async function updatePhotoStation(
+  stationId: string,
+  updates: {
+    name?: string
+    paper_size?: PaperSize
+    corners?: Point[]
+  }
+): Promise<PhotoStation> {
+  return fetchApi(`/api/photo-stations/${stationId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(updates),
+  })
+}
+
+export async function deletePhotoStation(stationId: string): Promise<void> {
+  await fetchApi(`/api/photo-stations/${stationId}`, { method: 'DELETE' })
 }
 
 export async function repairProject(projectId: string): Promise<ProjectHealthResponse> {
@@ -389,4 +502,101 @@ export function getBinThreemfUrl(binId: string): string {
 
 export function getBinInsertUrl(binId: string): string {
   return `${API_URL}/api/files/bins/${binId}/bin_insert.stl`
+}
+
+// --- authentication and accounts ---
+
+export async function getAuthStatus(): Promise<AuthStatus> {
+  return fetchApi('/api/auth/status')
+}
+
+export async function setupAdmin(email: string, password: string): Promise<Account> {
+  return fetchApi('/api/auth/setup', {
+    method: 'POST',
+    body: JSON.stringify({ email, password }),
+  })
+}
+
+export async function login(email: string, password: string): Promise<LoginResult> {
+  return fetchApi('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ email, password }),
+  })
+}
+
+export async function loginTwoFactor(pendingToken: string, code: string): Promise<LoginResult> {
+  return fetchApi('/api/auth/login/2fa', {
+    method: 'POST',
+    body: JSON.stringify({ pending_token: pendingToken, code }),
+  })
+}
+
+export async function logout(): Promise<void> {
+  return fetchApi('/api/auth/logout', { method: 'POST' })
+}
+
+export async function getMe(): Promise<Account> {
+  return fetchApi('/api/auth/me')
+}
+
+export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  return fetchApi('/api/auth/password', {
+    method: 'POST',
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  })
+}
+
+export async function enrollTwoFactor(): Promise<TwoFactorEnrolment> {
+  return fetchApi('/api/auth/2fa/enroll', { method: 'POST' })
+}
+
+export async function confirmTwoFactor(code: string): Promise<BackupCodes> {
+  return fetchApi('/api/auth/2fa/confirm', {
+    method: 'POST',
+    body: JSON.stringify({ code }),
+  })
+}
+
+export async function disableTwoFactor(password: string, code: string): Promise<void> {
+  return fetchApi('/api/auth/2fa/disable', {
+    method: 'POST',
+    body: JSON.stringify({ password, code }),
+  })
+}
+
+export async function regenerateBackupCodes(password: string, code: string): Promise<BackupCodes> {
+  return fetchApi('/api/auth/2fa/backup-codes', {
+    method: 'POST',
+    body: JSON.stringify({ password, code }),
+  })
+}
+
+export async function listUsers(): Promise<{ users: Account[] }> {
+  return fetchApi('/api/admin/users')
+}
+
+export async function createUser(req: CreateUserRequest): Promise<Account> {
+  return fetchApi('/api/admin/users', {
+    method: 'POST',
+    body: JSON.stringify(req),
+  })
+}
+
+export async function disableUser(id: string): Promise<Account> {
+  return fetchApi(`/api/admin/users/${id}/disable`, { method: 'POST' })
+}
+
+export async function enableUser(id: string): Promise<Account> {
+  return fetchApi(`/api/admin/users/${id}/enable`, { method: 'POST' })
+}
+
+export async function resetUserPassword(id: string, password: string): Promise<void> {
+  return fetchApi(`/api/admin/users/${id}/reset-password`, {
+    method: 'POST',
+    body: JSON.stringify({ password }),
+  })
+}
+
+export async function clearUserTwoFactor(id: string): Promise<void> {
+  return fetchApi(`/api/admin/users/${id}/clear-2fa`, { method: 'POST' })
 }

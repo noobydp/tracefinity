@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useRouter, useParams } from 'next/navigation'
 import { BinEditor } from '@/components/BinEditor'
 import { BinConfigurator, calcMaxCutoutDepth } from '@/components/BinConfigurator'
@@ -8,13 +8,22 @@ import { BinPreview3D } from '@/components/BinPreview3D'
 import { ToolBrowser } from '@/components/ToolBrowser'
 import { getBin, updateBin, generateBinStl, getBinStlUrl, getBinZipUrl, getBinThreemfUrl, getBinInsertUrl, getImageUrl, listTools, updateTool } from '@/lib/api'
 import { buildBinConfig, createPartialBinsValues, getDefaultBinConfig, resetDefaultBinConfig, saveDefaultBinConfig } from '@/lib/binDefaults'
+import { downloadExport } from '@/lib/download'
 import type { BinConfig, BinData, PlacedTool, TextLabel } from '@/types'
-import { Download, Loader2, Package, ChevronDown, Check } from 'lucide-react'
+import { Download, Loader2, Package, ChevronDown, Check, TriangleAlert } from 'lucide-react'
 import { Breadcrumb } from '@/components/Breadcrumb'
 import { Alert } from '@/components/Alert'
 import { useDebouncedSave } from '@/hooks/useDebouncedSave'
 import { useProjectSource } from '@/hooks/useProjectSource'
-import { GRID_UNIT } from '@/lib/constants'
+import {
+  binFitMargin,
+  getGridSizeError,
+  gridCellCount,
+  GRID_UNIT,
+  MAX_GRID_CELLS,
+  MAX_GRID_UNITS,
+  requiredGridUnits,
+} from '@/lib/constants'
 import { useTheme } from '@/hooks/useTheme'
 import { cn } from '@/lib/utils'
 
@@ -64,6 +73,37 @@ export default function BinPage() {
   const [defaultsStatus, setDefaultsStatus] = useState<string | null>(null)
   const defaultsStatusTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const exportRef = useRef<HTMLDivElement>(null)
+  const fitMargin = binFitMargin(config)
+
+  const requiredGridSize = useMemo(() => {
+    if (!autoSize || placedTools.length === 0) return null
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    for (const tool of placedTools) {
+      for (const point of tool.points) {
+        minX = Math.min(minX, point.x)
+        minY = Math.min(minY, point.y)
+        maxX = Math.max(maxX, point.x)
+        maxY = Math.max(maxY, point.y)
+      }
+    }
+
+    return {
+      x: requiredGridUnits(maxX - minX, fitMargin, config.half_grid_base),
+      y: requiredGridUnits(maxY - minY, fitMargin, config.half_grid_base),
+      minX,
+      minY,
+      maxX,
+      maxY,
+    }
+  }, [autoSize, placedTools, fitMargin, config.half_grid_base])
+
+  const requiredGridError = requiredGridSize
+    ? getGridSizeError(requiredGridSize.x, requiredGridSize.y)
+    : null
+  const gridLimitError = requiredGridSize && requiredGridError
+    ? `Layout requires ${requiredGridSize.x}×${requiredGridSize.y} grid units (${gridCellCount(requiredGridSize.x, requiredGridSize.y)} cells). The maximum is ${MAX_GRID_UNITS} units per axis and ${MAX_GRID_CELLS} cells total. Reduce or rearrange the tools; preview and export are paused, but edits continue to save.`
+    : null
 
   useEffect(() => {
     if (!exportOpen) return
@@ -116,8 +156,29 @@ export default function BinPage() {
     load()
   }, [binId])
 
+  const { saving, saved, error: saveError, flush: flushSave } = useDebouncedSave(
+    async () => {
+      if (!binData) return
+      await updateBin(binId, {
+        name: name || undefined,
+        bin_config: config,
+        placed_tools: placedTools,
+        text_labels: textLabels,
+      })
+    },
+    [binData, binId, name, config, placedTools, textLabels],
+    150,
+    { skipInitial: true }
+  )
+
+  const generationKey = useMemo(() => JSON.stringify({
+    placedTools, config, textLabels, smoothed: [...smoothedToolIds], levels: [...smoothLevels],
+  }), [placedTools, config, textLabels, smoothedToolIds, smoothLevels])
+
   const doGenerate = useCallback(async () => {
-    const key = JSON.stringify({ placedTools, config, textLabels, smoothed: [...smoothedToolIds], levels: [...smoothLevels] })
+    if (gridLimitError) return
+
+    const key = generationKey
     if (key === lastGenerateRef.current) return
 
     if (abortRef.current) {
@@ -139,7 +200,10 @@ export default function BinPage() {
     abortRef.current = controller
 
     try {
+      await flushSave({ force: true })
+      if (controller.signal.aborted) return
       const result = await generateBinStl(binId, controller.signal)
+      if (controller.signal.aborted) return
       setStlUrl(getImageUrl(result.stl_url))
       setStlUrls((result.stl_urls || []).map(u => getImageUrl(u)))
       setThreemfUrl(result.threemf_url ? getImageUrl(result.threemf_url) : null)
@@ -150,6 +214,7 @@ export default function BinPage() {
       setWarning(result.warning || null)
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') return
+      if (abortRef.current === controller) lastGenerateRef.current = ''
       setError(err instanceof Error ? err.message : 'generation failed')
     } finally {
       if (abortRef.current === controller) {
@@ -158,26 +223,27 @@ export default function BinPage() {
         abortRef.current = null
       }
     }
-  }, [binId, placedTools, config, textLabels, smoothedToolIds, smoothLevels])
+  }, [binId, generationKey, gridLimitError, flushSave])
 
   useEffect(() => {
     doGenerateRef.current = doGenerate
   }, [doGenerate])
 
-  const { saving, saved } = useDebouncedSave(
-    () => {
-      if (!binData) return
-      updateBin(binId, {
-        name: name || undefined,
-        bin_config: config,
-        placed_tools: placedTools,
-        text_labels: textLabels,
-      }).catch(() => {})
-    },
-    [binData, binId, name, config, placedTools, textLabels],
-    150,
-    { skipInitial: true }
-  )
+  useEffect(() => {
+    if (!gridLimitError) return
+    abortRef.current?.abort()
+    abortRef.current = null
+    generatingRef.current = false
+    lastGenerateRef.current = ''
+    setGenerating(false)
+    setError(null)
+    setWarning(null)
+    setStlUrl(null)
+    setStlUrls([])
+    setThreemfUrl(null)
+    setZipUrl(null)
+    setInsertStlUrl(null)
+  }, [gridLimitError])
 
   useEffect(() => {
     return () => {
@@ -203,23 +269,8 @@ export default function BinPage() {
 
   // auto-size: fit grid to bounding box of all placed tools, recentre if grid changes
   useEffect(() => {
-    if (!autoSize || isDragging || placedTools.length === 0) return
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-    for (const tool of placedTools) {
-      for (const p of tool.points) {
-        minX = Math.min(minX, p.x)
-        minY = Math.min(minY, p.y)
-        maxX = Math.max(maxX, p.x)
-        maxY = Math.max(maxY, p.y)
-      }
-    }
-    const halfMargin = config.wall_thickness + config.cutout_clearance + 0.25
-    const toolW = maxX - minX
-    const toolH = maxY - minY
-    const snap = config.half_grid_base ? 0.5 : 1.0;
-    const snapUnit = GRID_UNIT * snap;
-    const needX = Math.max(1, Math.ceil((toolW + 2 * halfMargin) / snapUnit) * snap);
-    const needY = Math.max(1, Math.ceil((toolH + 2 * halfMargin) / snapUnit) * snap);
+    if (isDragging || !requiredGridSize || requiredGridError) return
+    const { x: needX, y: needY, minX, minY, maxX, maxY } = requiredGridSize
 
     const gridChanged = config.grid_x !== needX || config.grid_y !== needY
     if (gridChanged) {
@@ -248,7 +299,7 @@ export default function BinPage() {
         ),
       })))
     }
-  }, [autoSize, isDragging, placedTools, config.grid_x, config.grid_y, config.wall_thickness, config.cutout_clearance, config.half_grid_base])
+  }, [isDragging, requiredGridSize, requiredGridError, placedTools, config.grid_x, config.grid_y])
 
   const handleToggleSmoothed = useCallback(async (toolId: string, smoothed: boolean) => {
     try {
@@ -281,13 +332,11 @@ export default function BinPage() {
     const toolW = maxX - minX
     const toolH = maxY - minY
 
-    const margin = 2 * config.wall_thickness + 2 * config.cutout_clearance + 0.5;
-    const snap = config.half_grid_base ? 0.5 : 1.0;
-    const snapUnit = GRID_UNIT * snap;
-    const needX = Math.max(config.grid_x, Math.ceil((toolW + margin) / snapUnit) * snap);
-    const needY = Math.max(config.grid_y, Math.ceil((toolH + margin) / snapUnit) * snap);
+    const needX = Math.max(config.grid_x, requiredGridUnits(toolW, fitMargin, config.half_grid_base));
+    const needY = Math.max(config.grid_y, requiredGridUnits(toolH, fitMargin, config.half_grid_base));
+    const candidateIsValid = getGridSizeError(needX, needY) === null
 
-    if (needX !== config.grid_x || needY !== config.grid_y) {
+    if (candidateIsValid && (needX !== config.grid_x || needY !== config.grid_y)) {
         setConfig((prev) => ({
             ...prev,
             grid_x: needX,
@@ -297,8 +346,8 @@ export default function BinPage() {
     }
 
     // always centre the tool in the bin
-    const binW = needX * GRID_UNIT
-    const binH = needY * GRID_UNIT
+    const binW = (candidateIsValid ? needX : config.grid_x) * GRID_UNIT
+    const binH = (candidateIsValid ? needY : config.grid_y) * GRID_UNIT
     const toolCx = (minX + maxX) / 2
     const toolCy = (minY + maxY) / 2
     const dx = binW / 2 - toolCx
@@ -313,22 +362,36 @@ export default function BinPage() {
     }
 
     setPlacedTools(prev => [...prev, placed])
-  }, [config.grid_x, config.grid_y, config.wall_thickness, config.cutout_clearance, config.half_grid_base])
+  }, [config.grid_x, config.grid_y, fitMargin, config.half_grid_base])
+
+  // the retention sweep purges exports, so a stale tab's file may be gone;
+  // downloadExport regenerates from saved state and retries before failing
+  const handleExport = useCallback(async (url: string) => {
+    try {
+      await downloadExport(url, async () => {
+        // clear the dedupe key or an unchanged layout skips regeneration
+        lastGenerateRef.current = ''
+        await doGenerate()
+      })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'export download failed')
+    }
+  }, [doGenerate])
 
   function handleDownload() {
-    window.open(getBinStlUrl(binId), '_blank')
+    handleExport(getBinStlUrl(binId))
   }
 
   function handleDownloadZip() {
-    window.open(getBinZipUrl(binId), '_blank')
+    handleExport(getBinZipUrl(binId))
   }
 
   function handleDownloadThreemf() {
-    window.open(getBinThreemfUrl(binId), '_blank')
+    handleExport(getBinThreemfUrl(binId))
   }
 
   function handleDownloadInsert() {
-    window.open(getBinInsertUrl(binId), '_blank')
+    handleExport(getBinInsertUrl(binId))
   }
 
   function showDefaultsStatus(message: string) {
@@ -367,13 +430,15 @@ export default function BinPage() {
     )
   }
 
-  const stlUrlWithVersion = stlUrl ? `${stlUrl}?v=${stlVersion}` : null
-  const splitUrlsWithVersion = stlUrls.length > 0 ? stlUrls.map(u => `${u}?v=${stlVersion}`) : null
-  const insertUrlWithVersion = insertStlUrl ? `${insertStlUrl}?v=${stlVersion}` : null
+  const stlUrlWithVersion = stlUrl && !gridLimitError ? `${stlUrl}?v=${stlVersion}` : null
+  const splitUrlsWithVersion = stlUrls.length > 0 && !gridLimitError ? stlUrls.map(u => `${u}?v=${stlVersion}`) : null
+  const insertUrlWithVersion = insertStlUrl && !gridLimitError ? `${insertStlUrl}?v=${stlVersion}` : null
   const binW = config.grid_x * GRID_UNIT
   const binH = config.grid_y * GRID_UNIT
   const effectiveRimUnits = config.stacking_lip ? config.rim_units : 0
-  const hasExports = stlUrl || zipUrl || threemfUrl || insertStlUrl
+  const hasExports = !gridLimitError && !saving && !generating
+    && generationKey === lastGenerateRef.current
+    && (stlUrl || zipUrl || threemfUrl || insertStlUrl)
 
   return (
     <div className="h-[calc(100vh-44px)] flex">
@@ -387,8 +452,19 @@ export default function BinPage() {
                 { label: name || 'Untitled', editable: true, onEdit: (v) => setName(v) },
               ]} />
               {saving && <Loader2 className="w-3 h-3 animate-spin text-text-muted flex-shrink-0" />}
-              {saved && <Check className="w-3 h-3 text-green-400 flex-shrink-0" />}
+              {saved && !saveError && <Check className="w-3 h-3 text-green-400 flex-shrink-0" />}
+              {saveError && !saving && (
+                <TriangleAlert
+                  className="w-3 h-3 text-red-400 flex-shrink-0"
+                  aria-label="Changes not saved"
+                />
+              )}
             </div>
+            {saveError && (
+              <div role="alert" className="mb-3 rounded-[8px] border border-red-800 bg-red-900/20 px-2 py-1.5 text-[11px] text-red-300">
+                Changes are not being saved. Recent edits to this bin will be lost if you leave the page.
+              </div>
+            )}
             <BinConfigurator config={config} onChange={setConfig} autoSize={autoSize} onAutoSizeChange={setAutoSize} />
             <div className="mt-3 border-t border-border pt-3 space-y-1.5">
               <div className="flex gap-1.5">
@@ -419,13 +495,14 @@ export default function BinPage() {
             <div className="text-[11px] text-text-secondary space-y-0.5">
               <div className="flex justify-between"><span>Width</span><span>{binW} mm</span></div>
               <div className="flex justify-between"><span>Depth</span><span>{binH} mm</span></div>
-              <div className="flex justify-between"><span>Height</span><span>{(config.height_units * 7 + 5 + effectiveRimUnits * 7 + (config.stacking_lip ? 4.4 : 0)).toFixed(1)} mm</span></div>
+              <div className="flex justify-between"><span>Height</span><span>{(config.height_units * 7 + effectiveRimUnits * 7 + (config.stacking_lip ? 4.4 : 0)).toFixed(1)} mm</span></div>
             </div>
           </div>
         </div>
 
         {/* export buttons */}
         <div className="p-3 flex-shrink-0 space-y-1.5">
+          {gridLimitError && <Alert variant="warning">{gridLimitError}</Alert>}
           {error && <Alert variant="error">{error}</Alert>}
           {warning && (
             <InfoBanner>{warning}</InfoBanner>
@@ -518,7 +595,7 @@ export default function BinPage() {
                 partialBinsValues={config.partial_bins_values}
                 wallThickness={config.wall_thickness}
                 defaultCutoutDepth={config.cutout_depth}
-                maxCutoutDepth={calcMaxCutoutDepth(config.height_units, config.stacking_lip)}
+                maxCutoutDepth={calcMaxCutoutDepth(config.height_units)}
                 halfGridBase={config.half_grid_base}
                 onEditTool={(toolId) => router.push(projectSource.scopedHref(`/tools/${toolId}`))}
                 smoothedToolIds={smoothedToolIds}
@@ -571,6 +648,8 @@ export default function BinPage() {
                       <Loader2 className="w-5 h-5 animate-spin text-blue-400" />
                       <span>Generating...</span>
                     </>
+                  ) : gridLimitError ? (
+                    <span className="max-w-xs px-4 text-center">Layout is too large to generate. Your edits are still saved.</span>
                   ) : (
                     <span>Preview will appear here</span>
                   )}

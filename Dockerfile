@@ -9,7 +9,7 @@ FROM node:20-slim AS frontend-build
 RUN corepack enable pnpm
 
 WORKDIR /frontend
-COPY frontend/package.json frontend/pnpm-lock.yaml ./
+COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY frontend/ ./
 ENV NEXT_PUBLIC_API_URL=
@@ -37,7 +37,9 @@ WORKDIR /app
 
 # backend
 COPY backend/requirements.txt ./backend/
-RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
+RUN pip install --no-cache-dir --upgrade pip
+# cpu-only torch; its deps resolve from pypi below, since the cpu index lags (pillow, filelock)
+RUN pip install --no-cache-dir --no-deps torch torchvision --index-url https://download.pytorch.org/whl/cpu
 RUN pip install --no-cache-dir -r backend/requirements.txt
 
 COPY backend/ ./backend/

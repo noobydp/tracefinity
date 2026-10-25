@@ -4,6 +4,7 @@ import { Info } from 'lucide-react'
 import type { BinConfig } from '@/types'
 import { NumericInput } from '@/components/NumericInput'
 import { createPartialBinsValues } from '@/lib/binDefaults'
+import { maxGridUnitsForOtherAxis } from '@/lib/constants'
 import { BED_SIZE_MAX_MM, BED_SIZE_MIN_MM } from '@/lib/settings'
 import { cn } from '@/lib/utils'
 import { ClassValue } from 'clsx'
@@ -11,13 +12,9 @@ import { useTheme } from '@/hooks/useTheme'
 
 const GF_HEIGHT_UNIT = 7.0
 const GF_BASE_HEIGHT = 4.75
-// lip_d3 (1.2) + lip_d4 (2.6)
-const LIP_NOTCH_DEPTH = 3.8
-
-export function calcMaxCutoutDepth(heightUnits: number, stackingLip: boolean): number {
-  const wallTopZ = heightUnits * GF_HEIGHT_UNIT
-  const lipDeduction = stackingLip ? LIP_NOTCH_DEPTH : 0
-  return Math.max(5, wallTopZ - GF_BASE_HEIGHT - 2 - lipDeduction)
+// Match generate_bin: the lip and raised rim sit above the pocket surface.
+export function calcMaxCutoutDepth(heightUnits: number): number {
+  return heightUnits * GF_HEIGHT_UNIT - GF_BASE_HEIGHT - 2
 }
 
 interface Props {
@@ -91,7 +88,7 @@ function SliderRow({
   onChange: (v: number) => void
   disabled?: boolean
 }) {
-  const pct = ((value - min) / (max - min)) * 100
+  const pct = max > min ? ((value - min) / (max - min)) * 100 : 0
 
   return (
     <div className={`relative space-y-1.5 py-2 ${disabled ? 'opacity-40 pointer-events-none' : ''}`}>
@@ -167,7 +164,7 @@ export function BinConfigurator({ config, onChange, autoSize, onAutoSizeChange }
     onChange({ ...config, ...partial })
   }
 
-  const maxCutoutDepth = calcMaxCutoutDepth(config.height_units, config.stacking_lip)
+  const maxCutoutDepth = calcMaxCutoutDepth(config.height_units)
   const binWidth = config.grid_x * 42
   const binDepth = config.grid_y * 42
   const needsSplit = config.bed_size > 0 && (binWidth > config.bed_size || binDepth > config.bed_size)
@@ -189,7 +186,7 @@ export function BinConfigurator({ config, onChange, autoSize, onAutoSizeChange }
         help="Bin width in gridfinity units (42mm each). Half-unit increments (21mm) supported."
         value={config.grid_x}
         min={1}
-        max={10}
+        max={maxGridUnitsForOtherAxis(config.grid_y)}
         step={0.5}
         unit="u"
         onChange={(v) =>
@@ -206,7 +203,7 @@ export function BinConfigurator({ config, onChange, autoSize, onAutoSizeChange }
         help="Bin depth in gridfinity units (42mm each). Half-unit increments (21mm) supported."
         value={config.grid_y}
         min={1}
-        max={10}
+        max={maxGridUnitsForOtherAxis(config.grid_x)}
         step={0.5}
         unit="u"
         onChange={(v) =>
@@ -220,27 +217,31 @@ export function BinConfigurator({ config, onChange, autoSize, onAutoSizeChange }
 
       <SliderRow
         label="Height"
-        help="Bin height in gridfinity units. Each unit is 7mm, plus a 4.75mm base."
+        help="Bin height in gridfinity units. Each unit is 7mm, including the base. The stacking lip and raised rim add height above this."
         value={config.height_units}
         min={1}
         max={20}
         unit="u"
         onChange={(v) => {
-          const newMax = calcMaxCutoutDepth(v, config.stacking_lip)
-          update({ height_units: v, cutout_depth: Math.min(config.cutout_depth, newMax) })
+          const newMax = calcMaxCutoutDepth(v)
+          update({ height_units: v, cutout_depth: Math.min(Math.max(5, config.cutout_depth), newMax) })
         }}
       />
 
       <SliderRow
         label="Cutout Depth"
-        help={`How deep the tool pocket is cut into the bin. Max ${maxCutoutDepth.toFixed(1)}mm at ${config.height_units}u height.`}
-        value={Math.min(config.cutout_depth, maxCutoutDepth)}
-        min={5}
+        help={`How deep the tool pocket is cut into the bin. Max ${maxCutoutDepth.toFixed(2)}mm at ${config.height_units}u height.`}
+        value={Math.min(Math.max(5, config.cutout_depth), maxCutoutDepth)}
+        min={Math.min(5, maxCutoutDepth)}
         max={maxCutoutDepth}
-        step={0.5}
+        step={0.25}
         unit="mm"
         onChange={(v) => update({ cutout_depth: v })}
       />
+
+      {maxCutoutDepth < 5 && (
+        <HintBanner>A 1u bin leaves only 0.25mm for a pocket. Increase Height for a deeper cutout.</HintBanner>
+      )}
 
       <SliderRow
         label="Clearance"
@@ -314,11 +315,11 @@ export function BinConfigurator({ config, onChange, autoSize, onAutoSizeChange }
         <Toggle
           checked={config.stacking_lip}
           onChange={(v) => {
-            const newMax = calcMaxCutoutDepth(config.height_units, v)
+            const newMax = calcMaxCutoutDepth(config.height_units)
             update({
               stacking_lip: v,
               rim_units: v ? config.rim_units : 0,
-              cutout_depth: Math.min(config.cutout_depth, newMax),
+              cutout_depth: Math.min(Math.max(5, config.cutout_depth), newMax),
             })
           }}
           label="Stacking lip"

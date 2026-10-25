@@ -1,11 +1,65 @@
 # API Endpoints
 
+## Authentication
+
+Identity depends on `AUTH_MODE` (see [auth.md](auth.md)). In `native` mode
+(default), the `tracefinity_auth` cookie authenticates API and `/storage`
+requests; unauthenticated requests receive `401`. In `proxy` mode a trusted
+reverse proxy sets `X-User-Id` with the matching `X-Proxy-Secret`; requests
+without the header receive `401`. In `open` mode requests fall back to the
+`default` namespace. Requests carrying `X-User-Id` when it is not trusted
+receive `403 Forbidden`.
+
+### Auth endpoints (native mode)
+
+- `GET /api/auth/status` - `{mode, setup_required, authenticated}`; available in every mode
+- `POST /api/auth/setup` - create the first administrator; `409` once setup is done
+- `POST /api/auth/login` - password login; 2FA accounts get `{pending: true, pending_token}` instead of a cookie
+- `POST /api/auth/login/2fa` - redeem a pending token with a TOTP or backup code
+- `POST /api/auth/logout` - revoke the auth token and clear the cookie
+- `GET /api/auth/me` - the authenticated account
+- `POST /api/auth/password` - self-service password change (requires the current password)
+- `POST /api/auth/2fa/enroll` - start TOTP enrolment; returns the secret and otpauth URI
+- `POST /api/auth/2fa/confirm` - confirm with a first valid code; enables 2FA and returns backup codes
+- `POST /api/auth/2fa/backup-codes` - regenerate backup codes (password + current code)
+- `POST /api/auth/2fa/disable` - disable 2FA (password + current code)
+
+Two-step login errors carry a machine-readable code so a client can tell them
+apart without matching on wording: `detail` is
+`{"code": ..., "message": ...}` instead of a plain string.
+`pending_login_invalid` means the pending token is spent and the login must
+restart; `two_factor_code_invalid` means only the code was wrong and the
+pending token is still good.
+
+### Admin endpoints (native mode)
+
+- `GET /api/admin/users` - list accounts
+- `POST /api/admin/users` - create an account; supports credential import (see [auth.md](auth.md))
+- `POST /api/admin/users/{id}/disable` - disable and revoke the account's tokens immediately
+- `POST /api/admin/users/{id}/enable` - re-enable
+- `POST /api/admin/users/{id}/reset-password` - set a new password, revoking tokens
+- `POST /api/admin/users/{id}/clear-2fa` - recovery for a lost authenticator; administrator session only
+- `GET /api/admin/tokens` - list administrator API tokens; administrator session only
+- `POST /api/admin/tokens` - issue one, returning the raw value once; administrator session only
+- `DELETE /api/admin/tokens/{id}` - revoke one; administrator session only
+
+Administrator API tokens authenticate the user-management endpoints above with
+`Authorization: Bearer <token>`, without a password or second factor. They do
+not reach `clear-2fa`, the token endpoints themselves, `storage-stats`, or
+anything outside `/api/admin/users`.
+
+Within those endpoints a token cannot create an administrator (`is_admin: true`
+is `403`) or write to an account that is one, so create, disable, enable and
+reset-password apply to ordinary accounts only. Listing is unrestricted. An
+administrator session keeps all of it. See [auth.md](auth.md).
+
 ## Sessions (trace workflow)
 - `POST /api/upload` - upload image, auto-detect corners
 - `POST /api/sessions/{id}/corners` - set corners, apply perspective correction; returns advisory photo warnings (camera too close, paper cut off, extreme perspective)
 - `POST /api/sessions/{id}/trace` - AI trace tool outlines
 - `POST /api/sessions/{id}/trace-mask` - trace from uploaded mask
 - `PUT /api/sessions/{id}/polygons` - save polygon edits
+- `POST /api/sessions/{id}/generate` - generate STL/3MF from traced polygons
 - `POST /api/sessions/{id}/save-tools` - convert traced polygons to library tools
 - `GET /api/sessions` - list sessions
 - `GET /api/sessions/{id}` - get session state
@@ -29,6 +83,11 @@ Trace and mask-trace responses include the final visible `Polygon.label` values 
 - `DELETE /api/bins/{id}` - delete bin + output files
 - `POST /api/bins/{id}/generate` - generate STL/3MF from bin
 
+Both generation endpoints may return `503 Service Unavailable` with
+`Retry-After: 5` when `STL_GENERATION_CONCURRENCY` is configured and every
+generation slot remains occupied for 5 seconds. Cached generation responses
+bypass this queue.
+
 ## Bin projects
 - `GET /api/bin-projects` - list project summaries with tool/bin/placement counts
 - `POST /api/bin-projects` - create a project, optionally seeded with tool ids
@@ -42,6 +101,11 @@ Trace and mask-trace responses include the final visible `Polygon.label` values 
 - `POST /api/bin-projects/{id}/create-bin` - create a new bin from selected project tools, using project or request bin defaults
 - `GET /api/bin-projects/{id}/health` - report project/tool/bin link mismatches
 - `POST /api/bin-projects/{id}/repair` - repair safe project/tool/bin link mismatches
+- `POST /api/bin-projects/{id}/sketches` - add a drawer plan (optional `name`, `target_grid_x`, `target_grid_y`)
+- `PATCH /api/bin-projects/{id}/sketches/{sketch_id}` - update a plan's name, drawer grid or `bin_layout`
+- `DELETE /api/bin-projects/{id}/sketches/{sketch_id}` - delete a plan; bins and tools are untouched
+
+A project holds any number of drawer plans in `sketches`, each `{id, name, target_grid_x, target_grid_y, bin_layout, created_at, updated_at}` with its own grid of 1-40 units. Records written before multiple plans existed are migrated on load: their project-level grid and layout become a single sketch. `bin_layout` is a list of `{id, bin_id, x, y, rotation, color}` placements on the project drawer grid. `x`/`y` are gridfinity units from the top-left in 0.5 steps, `rotation` is 0, 90, 180 or 270, and `color` is an optional `#rrggbb` highlight. Every placement must reference a bin linked to the project; the same bin may be placed several times, so placement ids must be unique (the server generates one when omitted). Placements are dropped automatically when a bin is detached or deleted. `GET /api/bins` reports `grid_x`, `grid_y`, `height_units`, `half_grid_base` and `preview_tools` so a drawer plan can draw bin footprints, their contents and the snap step each bin allows.
 
 ## API Keys and tracer status
 - `GET /api-keys` - returns current provider and available tracers
@@ -62,3 +126,7 @@ Response fields:
 - `GET /api/files/bins/{bin_id}/bin.stl` - bin STL
 - `GET /api/files/bins/{bin_id}/bin.3mf` - bin 3MF
 - `GET /api/files/bins/{bin_id}/bin_parts.zip` - bin split parts
+
+Exports are subject to the retention sweep (`STL_RETENTION_HOURS`, see
+[stl-generation.md](stl-generation.md)); a purged file returns `404` until the
+bin is regenerated.

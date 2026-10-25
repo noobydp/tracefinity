@@ -28,8 +28,6 @@
 
 ## Quick Start
 
-Try it at [tracefinity.net](https://tracefinity.net) without installing anything, or self-host:
-
 ### Docker
 
 ```bash
@@ -49,22 +47,35 @@ docker run -p 3000:3000 -v ./data:/app/storage -e REPLICATE_API_TOKEN=your-token
 docker run -p 3000:3000 -v ./data:/app/storage --user "$(id -u):$(id -g)" ghcr.io/tracefinity/tracefinity
 ```
 
-With a remote provider the corrected paper crop is sent to that provider for masking. fal is called with `sync_mode`, so the result is not kept in request history; Replicate API predictions (including the input image) auto-purge after about an hour, which is the only retention control Replicate exposes (it has no API to delete them sooner).
+With a remote provider the corrected paper crop is sent to that provider for masking. When a tool overhangs the sheet the crop grows past the paper edge and is sent again, so some of the surrounding photo can go to the provider in a second or third request. fal is called with `sync_mode`, so the result is not kept in request history; Replicate API predictions (including the input image) auto-purge after about an hour, which is the only retention control Replicate exposes (it has no API to delete them sooner).
 
 The Docker image supports **linux/amd64** and **linux/arm64**. Apple Silicon Macs run arm64 natively via Docker Desktop. ARM devices need at least 2GB RAM (for U2-Net paper detection), so a Raspberry Pi 4/5 with 4GB+ works.
 
 Open http://localhost:3000
+
+The first visit prompts you to create an administrator account; any data from
+an earlier version is claimed by that account, untouched on disk. See
+[Authentication](docs/auth.md) for modes, 2FA, and recovery.
 
 By default, Tracefinity uses [IS-Net](https://github.com/xuebinqin/DIS) for local tracing -- no API key needed. Set `GOOGLE_API_KEY` to use Gemini instead. See [Tracing Modes](#tracing-modes) for RAM requirements per model.
 
 | Variable | Default | Description |
 |-|-|-|
 | `GOOGLE_API_KEY` | | Gemini API key. Uses Gemini instead of local models |
-| `TRACERS` | auto-detected | Comma-separated list of available tracers, e.g. `gemini,birefnet-lite,isnet` |
+| `TRACERS` | auto-detected | Comma-separated list of available tracers, e.g. `gemini,birefnet-lite,isnet`. When set it is the complete list; unset with a Gemini or OpenRouter key offers `gemini` only |
+| `MAX_UPLOAD_MB` | `20` | Maximum compressed upload size in megabytes |
+| `MAX_IMAGE_PIXELS` | `64000000` | Maximum decoded pixels accepted before downscaling |
+| `STL_GENERATION_CONCURRENCY` | unlimited | Process-wide maximum STL generation jobs; excess jobs wait up to 5 seconds, then receive 503 |
+| `STL_RETENTION_HOURS` | `24` | Hours generated STL/3MF/zip exports are kept before a background sweep deletes them; a bin page regenerates them on the next visit or export download. `0` keeps exports forever |
 | `TRACEFINITY_ONNX_PROVIDER` | `auto` | Local ONNX provider: `auto`, `cuda`, or `cpu` |
 | `GEMINI_IMAGE_MODEL` | `gemini-3.1-flash-image-preview` | Gemini model for mask generation (see below) |
-| `TOOL_LABEL_PROVIDER` | `none` | Optional automatic tool naming. Set to `ollama` for local vision naming |
+| `TOOL_LABEL_PROVIDER` | `none` | Optional automatic tool naming: `ollama` (local vision model) or `openrouter` (any OpenAI-compatible endpoint via `OPENROUTER_URL`). See [Tool naming](docs/tool-naming.md) |
 | `SHOW_APP_VERSION` | `true` | Show the running version in the settings popover. Set to `false` to hide it |
+| `AUTH_MODE` | `native` | Authentication mode: `native` (cookie login), `proxy` (trusted reverse proxy, deprecated), or `open` (no authentication, trusted networks only). See [Authentication](docs/auth.md) |
+| `AUTH_SECRET` | auto-generated | Encrypts 2FA secrets at rest. Auto-generated into the storage volume when unset |
+| `AUTH_COOKIE_SECURE` | `false` | Mark the auth cookie `Secure`. Set `true` behind TLS |
+| `AUTH_COOKIE_DOMAIN` | host-only | Auth cookie domain for subdomain topologies |
+| `PROXY_SECRET` | | Shared secret for a trusted multi-user reverse proxy (`proxy` mode). Leave unset for normal standalone use |
 
 ### Docker Compose
 
@@ -252,10 +263,18 @@ Step-by-step usage guides covering each part of the workflow:
 - [Automatic tool naming](docs/tool-naming.md)
 - [Keyboard shortcuts](docs/usage/keyboard-shortcuts.md)
 - [Backup and restore](docs/usage/backups.md)
+- [Authentication](docs/auth.md)
 
 ## What is Gridfinity?
 
 [Gridfinity](https://gridfinity.xyz/) is a modular storage system designed by [Zack Freedman](https://www.youtube.com/watch?v=ra_9zU-mnl8). Bins snap into baseplates on a 42mm grid, making it easy to organise tools, components, and supplies. The system is open source and hugely popular in the 3D printing community.
+
+## Contributing
+
+Tracefinity has a deliberately focused product boundary. Read the
+[product constitution](CONSTITUTION.md) before proposing a substantial feature,
+then see [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and
+[DESIGN.md](DESIGN.md) for engineering principles.
 
 ## Licence
 

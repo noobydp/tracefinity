@@ -25,14 +25,39 @@ it('adds a multi-word tag with Enter, prevents duplicates, and removes tags', ()
   expect(screen.queryByRole('button', { name: /Remove tag/ })).toBeNull()
 })
 
-it('keeps a removed tag filter clearable when no remaining tool carries it', () => {
+it('searches tags, selects multiple values, and clears without resetting the search', () => {
   function Filter() {
-    const [value, setValue] = useState('sockets')
+    const [value, setValue] = useState<string[]>([])
+    return <ToolTagFilter tags={['Sockets', 'Hex keys', 'Pliers']} value={value} onChange={setValue} />
+  }
+  render(<Filter />)
+  fireEvent.click(screen.getByRole('button', { name: 'Tags' }))
+  const search = screen.getByRole('searchbox', { name: 'Search tags' }) as HTMLInputElement
+  expect(document.activeElement).toBe(search)
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Sockets' }))
+  fireEvent.change(search, { target: { value: 'HEX' } })
+  expect(screen.queryByRole('checkbox', { name: 'Sockets' })).toBeNull()
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Hex keys' }))
+  expect(screen.getByRole('button', { name: 'Tags (2 selected)' })).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: 'Clear tags' }))
+  expect(screen.getByRole('button', { name: 'Tags' })).toBeTruthy()
+  expect(search.value).toBe('HEX')
+  fireEvent.keyDown(search, { key: 'Escape' })
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Tags' }))
+})
+
+it('keeps removed tags selectable and clears them, and dismisses on an outside click', () => {
+  function Filter() {
+    const [value, setValue] = useState(['sockets'])
     return <ToolTagFilter tags={[]} value={value} onChange={setValue} />
   }
   render(<Filter />)
-  const select = screen.getByRole('combobox', { name: 'Filter by tag' }) as HTMLSelectElement
-  expect(select.value).toBe('sockets')
-  fireEvent.change(select, { target: { value: '' } })
-  expect(select.value).toBe('')
+  fireEvent.click(screen.getByRole('button', { name: 'Tags (1 selected)' }))
+  const selected = screen.getByRole('checkbox', { name: 'sockets' }) as HTMLInputElement
+  expect(selected.checked).toBe(true)
+  fireEvent.click(selected)
+  expect(screen.getByText('No tags yet.')).toBeTruthy()
+  fireEvent.mouseDown(document.body)
+  expect(screen.queryByRole('dialog')).toBeNull()
 })

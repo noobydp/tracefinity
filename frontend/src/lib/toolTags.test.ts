@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { libraryTags, matchesToolTag, normalizeTags } from './toolTags'
+import { libraryTags, matchesToolTags, normalizeTags } from './toolTags'
 
 describe('tool tags', () => {
   it('trims, removes empty values and deduplicates without losing multi-word tags', () => {
@@ -11,10 +11,10 @@ describe('tool tags', () => {
       .toEqual(['Hex keys', 'Measuring', 'Sockets'])
   })
 
-  it('matches full tags without case sensitivity, while all includes untagged tools', () => {
-    expect(matchesToolTag({ tags: ['Hex keys'] }, 'hex keys')).toBe(true)
-    expect(matchesToolTag({ tags: ['Hex keys'] }, 'hex')).toBe(false)
-    expect(matchesToolTag({ tags: [] }, 'hex keys')).toBe(false)
-    expect(matchesToolTag({ tags: [] }, '')).toBe(true)
+  it('matches any full selected tag without case sensitivity, while no selection includes untagged tools', () => {
+    expect(matchesToolTags({ tags: ['Hex keys'] }, ['Sockets', 'HEX KEYS'])).toBe(true)
+    expect(matchesToolTags({ tags: ['Hex keys'] }, ['hex'])).toBe(false)
+    expect(matchesToolTags({ tags: [] }, ['hex keys'])).toBe(false)
+    expect(matchesToolTags({ tags: [] }, [])).toBe(true)
   })
 })

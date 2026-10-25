@@ -14,6 +14,7 @@ export function libraryTags(tools: Pick<ToolSummary, 'tags'>[]): string[] {
   return normalizeTags(tools.flatMap(tool => tool.tags)).sort((a, b) => a.localeCompare(b))
 }
 
-export function matchesToolTag(tool: Pick<ToolSummary, 'tags'>, tag: string): boolean {
-  return !tag || tool.tags.some(value => value.trim().toLowerCase() === tag.toLowerCase())
+export function matchesToolTags(tool: Pick<ToolSummary, 'tags'>, tags: string[]): boolean {
+  const selected = new Set(tags.map(tag => tag.trim().toLowerCase()))
+  return selected.size === 0 || tool.tags.some(tag => selected.has(tag.trim().toLowerCase()))
 }

@@ -17,7 +17,7 @@ import { useDeleteConfirmation } from '@/hooks/useDeleteConfirmation'
 import { projectNameMap, projectStatusLabels, toolProjectLabel, toolProjectTitle } from '@/lib/projectSelectors'
 import { filterToolsByStatus, getToolQuickFilterCounts } from '@/lib/toolFilters'
 import type { ToolQuickFilter } from '@/lib/toolFilters'
-import { libraryTags, matchesToolTag } from '@/lib/toolTags'
+import { libraryTags, matchesToolTags } from '@/lib/toolTags'
 import { ToolTags, ToolTagFilter } from '@/components/ToolTags'
 import { cn } from '@/lib/utils'
 import { useTheme } from '@/hooks/useTheme'
@@ -332,7 +332,7 @@ export default function HomePage() {
   const [toolSearch, setToolSearch] = useState('')
   const [toolSort, setToolSort] = useState('date')
   const [toolQuickFilter, setToolQuickFilter] = useState<ToolQuickFilter>('all')
-  const [toolTag, setToolTag] = useState('')
+  const [toolTags, setToolTags] = useState<string[]>([])
   const [collapsedSections, setCollapsedSections] = useState<MainSectionCollapseState>(loadSectionCollapseState)
 
   const hasData = toolsList.length > 0 || binsList.length > 0 || projectsList.length > 0 || stationsList.length > 0
@@ -378,7 +378,7 @@ export default function HomePage() {
 
   const filteredTools = useMemo(() => {
     let list = filterToolsByStatus(toolsList, toolQuickFilter, projectBinToolIds)
-    list = list.filter(tool => matchesToolTag(tool, toolTag))
+    list = list.filter(tool => matchesToolTags(tool, toolTags))
     if (toolSearch.trim()) {
       const q = toolSearch.toLowerCase()
       list = list.filter(t => t.name.toLowerCase().includes(q))
@@ -387,7 +387,7 @@ export default function HomePage() {
       list = [...list].sort((a, b) => a.name.localeCompare(b.name))
     }
     return list
-  }, [toolsList, projectBinToolIds, toolQuickFilter, toolTag, toolSearch, toolSort])
+  }, [toolsList, projectBinToolIds, toolQuickFilter, toolTags, toolSearch, toolSort])
 
   const availableToolTags = useMemo(() => libraryTags(toolsList), [toolsList])
 
@@ -700,8 +700,8 @@ export default function HomePage() {
           <>
             <div
               role="group"
-              aria-label="Filter tools by status"
-              className="mb-3 flex min-w-0 items-center gap-1.5 overflow-x-auto pb-0.5"
+              aria-label="Filter tools"
+              className="mb-3 flex min-w-0 flex-wrap items-center gap-1.5"
             >
               {toolQuickFilterOptions.map(option => {
                 const isActive = toolQuickFilter === option.value
@@ -721,8 +721,8 @@ export default function HomePage() {
                   </button>
                 )
               })}
+              <ToolTagFilter tags={availableToolTags} value={toolTags} onChange={setToolTags} />
             </div>
-            <ToolTagFilter tags={availableToolTags} value={toolTag} onChange={setToolTag} />
             {filteredTools.length > 0 ? (
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
               {filteredTools.map(tool => {

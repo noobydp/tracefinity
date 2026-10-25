@@ -21,6 +21,7 @@ import { libraryTags, matchesToolTag } from '@/lib/toolTags'
 import { ToolTags, ToolTagFilter } from '@/components/ToolTags'
 import { cn } from '@/lib/utils'
 import { useTheme } from '@/hooks/useTheme'
+import { ToolMeasurements } from '@/components/ToolMeasurements'
 
 function thumbnailRotationStyle(transform: AffineMatrix | null): React.CSSProperties | undefined {
   if (!transform) return undefined
@@ -765,6 +766,7 @@ export default function HomePage() {
                       <div className="relative">
                         <div className="min-w-0 pr-12 md:pr-0">
                           <p className="text-[12px] font-medium text-text-primary truncate leading-tight">{tool.name}</p>
+                          <ToolMeasurements tool={tool} />
                           <ToolTags tags={tool.tags} />
                           <div className="flex min-w-0 items-center gap-1.5 mt-0.5 overflow-hidden whitespace-nowrap">
                             <span className="text-[10px] text-text-muted flex-shrink-0">{formatDate(tool.created_at)}</span>

@@ -398,6 +398,7 @@ class ReuseCornersResponse(BaseModel):
 class Tool(BaseModel):
     id: str
     name: str
+    height_mm: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     points: list[Point]  # mm, centered at (0,0)
     finger_holes: list[FingerHole] = []  # mm, relative to tool origin
     interior_rings: list[list[Point]] = []  # mm, centered at (0,0)
@@ -426,6 +427,7 @@ class ToolDetailResponse(Tool):
 class ToolSummary(BaseModel):
     id: str
     name: str
+    height_mm: float | None = None
     created_at: str | None
     point_count: int
     points: list[Point] = []
@@ -445,6 +447,7 @@ class ToolSummary(BaseModel):
 
 class ToolUpdateRequest(BaseModel):
     name: str | None = None
+    height_mm: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     points: list[Point] | None = None
     finger_holes: list[FingerHole] | None = None
     interior_rings: list[list[Point]] | None = None

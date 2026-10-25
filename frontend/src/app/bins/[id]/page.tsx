@@ -570,6 +570,7 @@ export default function BinPage() {
         {/* library strip - full width */}
         <div className="flex-shrink-0 bg-surface border-b border-border px-3 py-2">
           <ToolBrowser
+            fitConfig={config}
             onAddTool={handleAddTool}
             binWidthMm={binW}
             binHeightMm={binH}

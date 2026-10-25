@@ -10,6 +10,8 @@ import { useProjectSource } from '@/hooks/useProjectSource'
 import { projectNameMap } from '@/lib/projectSelectors'
 import { ToolEditor } from '@/components/ToolEditor'
 import { ToolTagsEditor } from '@/components/ToolTags'
+import { ToolMeasurements } from '@/components/ToolMeasurements'
+import { ToolHeightInput } from '@/components/ToolHeightInput'
 import { Alert } from '@/components/Alert'
 import { Breadcrumb } from '@/components/Breadcrumb'
 import type { Tool, Point, FingerHole, AffineMatrix, BinProjectSummary } from '@/types'
@@ -18,6 +20,7 @@ function editPayload(tool: Tool, name: string) {
   return {
     name,
     tags: tool.tags,
+    height_mm: tool.height_mm ?? null,
     points: tool.points,
     finger_holes: tool.finger_holes,
     interior_rings: tool.interior_rings,
@@ -191,6 +194,8 @@ function ToolDetail({ toolId }: { toolId: string }) {
       </div>
 
       <div className="absolute top-14 left-3.5 z-20 glass-toolbar px-3 py-2 min-w-[220px] max-w-[280px] max-h-[calc(100%_-_72px)] overflow-y-auto">
+        <ToolMeasurements tool={tool} />
+        <ToolHeightInput value={tool.height_mm ?? null} onChange={height_mm => setTool(prev => prev ? { ...prev, height_mm } : prev)} />
         <ToolTagsEditor tags={tool.tags} onChange={tags => setTool(prev => prev ? { ...prev, tags } : prev)} />
         {saveError && (
           <div role="alert" className="my-2 text-xs text-text-primary">

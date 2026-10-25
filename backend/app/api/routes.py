@@ -1507,6 +1507,7 @@ async def list_tools(request: Request, user_id: str = Depends(get_user_id)):
         summaries.append(ToolSummary(
             id=tid,
             name=tool.name,
+            height_mm=tool.height_mm,
             created_at=tool.created_at,
             point_count=len(tool.points),
             points=tool.points,
@@ -1551,6 +1552,8 @@ async def update_tool(request: Request, tool_id: str, req: ToolUpdateRequest, us
 
     if req.name is not None:
         tool.name = req.name
+    if "height_mm" in req.model_fields_set:
+        tool.height_mm = req.height_mm
     if req.points is not None:
         tool.points = req.points
     if req.finger_holes is not None:

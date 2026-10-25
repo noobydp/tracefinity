@@ -4,6 +4,7 @@ import { Wrench } from 'lucide-react'
 import { getImageUrl } from '@/lib/api'
 import type { ToolSummary } from '@/types'
 import type { ReactNode } from 'react'
+import { ToolMeasurements } from './ToolMeasurements'
 
 type ThumbnailSize = 'xs' | 'sm' | 'md'
 
@@ -39,6 +40,7 @@ export function ToolSummaryItem({ tool, size = 'md', showPoints = true, classNam
         <span className={`${size === 'xs' ? 'text-[10px] text-text-secondary' : size === 'sm' ? 'text-[11px]' : 'text-xs'} block text-text-primary truncate`}>
           {tool.name}
         </span>
+        <ToolMeasurements tool={tool} />
         {showPoints && size !== 'xs' && (
           <span className="block text-[10px] text-text-muted">{tool.point_count} points</span>
         )}
@@ -57,7 +59,7 @@ export function ToolSummaryButton({ tool, onClick, size = 'sm', className = '' }
   return (
     <button
       onClick={onClick}
-      className={`w-full flex items-center gap-2 text-left rounded-[7px] hover:bg-glass-hover transition-colors cursor-pointer ${size === 'sm' ? 'h-9' : 'h-8'} ${className}`}
+      className={`w-full flex items-center gap-2 text-left rounded-[7px] hover:bg-glass-hover transition-colors cursor-pointer min-h-10 py-1 ${className}`}
     >
       <ToolSummaryItem tool={tool} size={size} showPoints={size !== 'xs'} />
     </button>

@@ -161,6 +161,7 @@ export interface BinConfig extends BinDefaults {
 export interface Tool {
   id: string
   name: string
+  height_mm?: number | null
   points: Point[]
   finger_holes: FingerHole[]
   interior_rings: Point[][]
@@ -192,6 +193,7 @@ export interface ToolImageContext {
 export interface ToolSummary {
   id: string
   name: string
+  height_mm?: number | null
   created_at: string | null
   point_count: number
   points: Point[]

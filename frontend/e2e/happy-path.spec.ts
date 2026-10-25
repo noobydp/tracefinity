@@ -151,6 +151,21 @@ test.describe.serial('happy path', () => {
       .toEqual([])
   })
 
+  test('measured height saves, reloads and can be cleared', async () => {
+    const input = page.getByLabel('Tool height (mm)')
+    await input.fill('12.5')
+    // Clicking away commits the field and must flush the pending save.
+    await page.getByRole('link', { name: 'Tools', exact: true }).click()
+    await expect.poll(async () => (await (await page.request.get(`/api/tools/${toolId}`)).json()).height_mm)
+      .toBe(12.5)
+    await page.goto(`/tools/${toolId}`)
+    await expect(page.getByLabel('Tool height (mm)')).toHaveValue('12.5')
+    await page.getByLabel('Tool height (mm)').fill('')
+    await page.getByLabel('Tool height (mm)').press('Enter')
+    await expect.poll(async () => (await (await page.request.get(`/api/tools/${toolId}`)).json()).height_mm)
+      .toBeNull()
+  })
+
   test('toggle smooth', async () => {
     // the editor always opens in the accurate view, independently of the
     // tool's saved output preference

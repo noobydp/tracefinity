@@ -71,9 +71,14 @@ Trace and mask-trace responses include the final visible `Polygon.label` values 
 ## Tools (library)
 - `GET /api/tools` - list tools
 - `GET /api/tools/{id}` - get tool
-- `PUT /api/tools/{id}` - update tool (name, points, finger_holes)
+- `PUT /api/tools/{id}` - update tool (name, points, finger_holes, optional `height_mm`)
 - `POST /api/tools/{id}/auto-rotate` - compute optimal rotation angle (degrees) to minimise bounding box
 - `DELETE /api/tools/{id}` - delete tool
+
+Tool detail and library summaries include `height_mm`: measured tool thickness
+in millimetres, or `null` when unknown (including old tools). Updates require
+a finite positive number; explicit `null` clears it, while omitting the field
+preserves the saved value. This metadata does not alter bin geometry.
 
 ## Bins
 - `GET /api/bins` - list bins

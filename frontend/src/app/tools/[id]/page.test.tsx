@@ -38,3 +38,19 @@ it('saves tag edits with the current outline and makes a failed save retryable',
   await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
   expect(updateTool).toHaveBeenCalledTimes(2)
 })
+
+it('saves height edits with the current outline and makes a failed save retryable', async () => {
+  const points = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 0, y: 10 }]
+  getTool.mockResolvedValue({ id: 'tool-1', name: 'Hex key', points, tags: [], project_ids: [], finger_holes: [], interior_rings: [], smoothed: false, smooth_level: 0.5 })
+  updateTool.mockRejectedValueOnce(new Error('offline')).mockResolvedValue(undefined)
+  render(<ToolPage />)
+  const input = await screen.findByLabelText('Tool height (mm)')
+  // An edit immediately after load must not fall into the old arming delay.
+  fireEvent.change(input, { target: { value: '12.5' } })
+  fireEvent.blur(input)
+  expect(await screen.findByRole('alert')).toBeTruthy()
+  expect(updateTool).toHaveBeenLastCalledWith('tool-1', expect.objectContaining({ height_mm: 12.5, points }))
+  fireEvent.click(screen.getByRole('button', { name: 'Retry save' }))
+  await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
+  expect(updateTool).toHaveBeenCalledTimes(2)
+})

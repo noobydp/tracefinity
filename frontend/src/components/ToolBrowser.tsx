@@ -6,8 +6,11 @@ import { getProject, listTools } from '@/lib/api'
 import type { BinProject, ToolSummary, PlacedTool, Point } from '@/types'
 import { getTool } from '@/lib/api'
 import { polygonPathData } from '@/lib/svg'
+import { ToolMeasurements } from './ToolMeasurements'
+import type { FootprintConfig } from '@/lib/toolDimensions'
 
 interface Props {
+  fitConfig?: FootprintConfig
   onAddTool: (tool: PlacedTool) => void
   binWidthMm: number
   binHeightMm: number
@@ -50,7 +53,7 @@ function ToolThumbnail({ points, interiorRings }: { points: Point[]; interiorRin
   )
 }
 
-export function ToolBrowser({ onAddTool, binWidthMm, binHeightMm, layout = 'grid', projectId, currentToolIds = [] }: Props) {
+export function ToolBrowser({ onAddTool, binWidthMm, binHeightMm, layout = 'grid', projectId, currentToolIds = [], fitConfig }: Props) {
   const [tools, setTools] = useState<ToolSummary[]>([])
   const [project, setProject] = useState<BinProject | null>(null)
   const [loading, setLoading] = useState(true)
@@ -200,6 +203,7 @@ export function ToolBrowser({ onAddTool, binWidthMm, binHeightMm, layout = 'grid
               </div>
               <div className="px-1.5 py-1">
                 <span className="text-[10px] text-text-secondary truncate block">{tool.name}</span>
+                <ToolMeasurements tool={tool} config={fitConfig} />
               </div>
             </button>
           ))}
@@ -252,6 +256,7 @@ export function ToolBrowser({ onAddTool, binWidthMm, binHeightMm, layout = 'grid
             <span className="text-[10px] text-text-secondary truncate">{tool.name}</span>
             <Plus className="w-3 h-3 text-text-muted opacity-0 group-hover:opacity-100 flex-shrink-0 transition-opacity" />
           </div>
+          <div className="px-1.5 pb-1"><ToolMeasurements tool={tool} config={fitConfig} /></div>
         </button>
       ))}
       {filtered.length === 0 && search && (

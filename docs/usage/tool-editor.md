@@ -10,6 +10,14 @@ are removed when adding. Use the remove button beside a tag to delete it.
 Changes save automatically; a failed save stays visible with **Retry save**.
 Tags organise tools across projects and can be filtered in the library.
 
+## Tool dimensions
+
+The side panel shows the tool's reference minimum grid footprint. Enter its
+measured thickness in **Tool height (mm)** and press Enter or leave the field
+to save it. Height must be finite and greater than zero; clear the field to
+mark it unknown. A failed save offers **Retry save**. Height does not alter
+bin height, pocket depth or the traced outline.
+
 ## Editing modes
 
 **Select** -- drag vertices and cutouts to reposition them.

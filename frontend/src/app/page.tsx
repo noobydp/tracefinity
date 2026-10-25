@@ -17,6 +17,8 @@ import { useDeleteConfirmation } from '@/hooks/useDeleteConfirmation'
 import { projectNameMap, projectStatusLabels, toolProjectLabel, toolProjectTitle } from '@/lib/projectSelectors'
 import { filterToolsByStatus, getToolQuickFilterCounts } from '@/lib/toolFilters'
 import type { ToolQuickFilter } from '@/lib/toolFilters'
+import { libraryTags, matchesToolTag } from '@/lib/toolTags'
+import { ToolTags, ToolTagFilter } from '@/components/ToolTags'
 import { cn } from '@/lib/utils'
 import { useTheme } from '@/hooks/useTheme'
 
@@ -330,6 +332,7 @@ export default function HomePage() {
   const [toolSearch, setToolSearch] = useState('')
   const [toolSort, setToolSort] = useState('date')
   const [toolQuickFilter, setToolQuickFilter] = useState<ToolQuickFilter>('all')
+  const [toolTag, setToolTag] = useState('')
   const [collapsedSections, setCollapsedSections] = useState<MainSectionCollapseState>(loadSectionCollapseState)
 
   const hasData = toolsList.length > 0 || binsList.length > 0 || projectsList.length > 0 || stationsList.length > 0
@@ -375,6 +378,7 @@ export default function HomePage() {
 
   const filteredTools = useMemo(() => {
     let list = filterToolsByStatus(toolsList, toolQuickFilter, projectBinToolIds)
+    list = list.filter(tool => matchesToolTag(tool, toolTag))
     if (toolSearch.trim()) {
       const q = toolSearch.toLowerCase()
       list = list.filter(t => t.name.toLowerCase().includes(q))
@@ -383,7 +387,9 @@ export default function HomePage() {
       list = [...list].sort((a, b) => a.name.localeCompare(b.name))
     }
     return list
-  }, [toolsList, projectBinToolIds, toolQuickFilter, toolSearch, toolSort])
+  }, [toolsList, projectBinToolIds, toolQuickFilter, toolTag, toolSearch, toolSort])
+
+  const availableToolTags = useMemo(() => libraryTags(toolsList), [toolsList])
 
   const toolQuickFilterOptions = useMemo(() => {
     const counts = getToolQuickFilterCounts(toolsList, projectBinToolIds)
@@ -716,6 +722,7 @@ export default function HomePage() {
                 )
               })}
             </div>
+            <ToolTagFilter tags={availableToolTags} value={toolTag} onChange={setToolTag} />
             {filteredTools.length > 0 ? (
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
               {filteredTools.map(tool => {
@@ -758,6 +765,7 @@ export default function HomePage() {
                       <div className="relative">
                         <div className="min-w-0 pr-12 md:pr-0">
                           <p className="text-[12px] font-medium text-text-primary truncate leading-tight">{tool.name}</p>
+                          <ToolTags tags={tool.tags} />
                           <div className="flex min-w-0 items-center gap-1.5 mt-0.5 overflow-hidden whitespace-nowrap">
                             <span className="text-[10px] text-text-muted flex-shrink-0">{formatDate(tool.created_at)}</span>
                             <span className="text-[10px] text-text-muted flex-shrink-0">·</span>

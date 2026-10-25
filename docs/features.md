@@ -114,6 +114,7 @@ Reference for AI agents. Check here before suggesting new features or claiming s
 ## Tool Library
 
 - Reference minimum grid footprint and optional measured tool height on cards, project rows and bin pickers
+- Library minimum/maximum footprint and height filters, combined with name/status
 - Search by name
 - Edit free-form tool tags and filter the library by tag alongside name/status
 - Sort by date or alphabetical

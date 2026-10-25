@@ -166,6 +166,22 @@ test.describe.serial('happy path', () => {
       .toBeNull()
   })
 
+  test('size filters exclude unknown height only when requested and can be cleared', async () => {
+    await page.goto('/')
+    await page.getByText('Filter by size', { exact: true }).click()
+    await page.getByLabel('Maximum tool height (mm)', { exact: true }).fill('20')
+    await expect(page.getByText('No tools match this filter.')).toBeVisible()
+    await page.getByRole('button', { name: 'Clear size filters' }).click()
+    await expect(page.getByText('hacksaw', { exact: true }).first()).toBeVisible()
+    await page.getByLabel('Minimum grid width (u)', { exact: true }).fill('100')
+    await expect(page.getByText('No tools match this filter.')).toBeVisible()
+    await page.getByLabel('Maximum grid width (u)', { exact: true }).fill('1')
+    await expect(page.getByRole('alert').filter({ hasText: 'Size filters paused' })).toBeVisible()
+    await expect(page.getByText('hacksaw', { exact: true }).first()).toBeVisible()
+    await page.getByRole('button', { name: 'Clear size filters' }).click()
+    await page.goto(`/tools/${toolId}`)
+  })
+
   test('toggle smooth', async () => {
     // the editor always opens in the accurate view, independently of the
     // tool's saved output preference

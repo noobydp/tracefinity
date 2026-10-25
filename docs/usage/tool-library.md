@@ -16,6 +16,19 @@ including half-grid sizing. It updates when the outline or settings change.
 in the tool editor; photos cannot determine it. Height is information for
 planning and does not change saved bin heights or pocket depths.
 
+## Filtering by size
+
+Expand **Filter by size** and enter minimum and/or maximum grid width, grid
+depth or measured tool height. Limits are inclusive and combine with name
+search and placement status. Footprints use the reference settings and saved
+orientation described above; the filter does not rotate tools. Tools with
+unknown height remain visible unless a height limit is set. A footprint limit
+excludes tools whose outline is missing.
+
+Leave either bound blank for no limit. Invalid or reversed ranges show an
+error and pause size filtering while name/status filtering continues. **Clear
+size filters** removes all size limits without clearing other filters.
+
 ## Actions
 
 - **Open the editor** -- click a tool to edit its outline, add cutouts, or transform it.

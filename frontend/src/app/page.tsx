@@ -22,6 +22,9 @@ import { ToolTags, ToolTagFilter } from '@/components/ToolTags'
 import { cn } from '@/lib/utils'
 import { useTheme } from '@/hooks/useTheme'
 import { ToolMeasurements } from '@/components/ToolMeasurements'
+import { ToolDimensionFilters } from '@/components/ToolDimensionFilters'
+import { useToolDimensionFilters } from '@/hooks/useToolDimensionFilters'
+import { matchesToolDimensions } from '@/lib/toolDimensionFilters'
 
 function thumbnailRotationStyle(transform: AffineMatrix | null): React.CSSProperties | undefined {
   if (!transform) return undefined
@@ -334,6 +337,7 @@ export default function HomePage() {
   const [toolSort, setToolSort] = useState('date')
   const [toolQuickFilter, setToolQuickFilter] = useState<ToolQuickFilter>('all')
   const [toolTag, setToolTag] = useState('')
+  const dimensionFilters = useToolDimensionFilters()
   const [collapsedSections, setCollapsedSections] = useState<MainSectionCollapseState>(loadSectionCollapseState)
 
   const hasData = toolsList.length > 0 || binsList.length > 0 || projectsList.length > 0 || stationsList.length > 0
@@ -380,6 +384,7 @@ export default function HomePage() {
   const filteredTools = useMemo(() => {
     let list = filterToolsByStatus(toolsList, toolQuickFilter, projectBinToolIds)
     list = list.filter(tool => matchesToolTag(tool, toolTag))
+    list = list.filter(tool => matchesToolDimensions(tool, dimensionFilters.ranges))
     if (toolSearch.trim()) {
       const q = toolSearch.toLowerCase()
       list = list.filter(t => t.name.toLowerCase().includes(q))
@@ -388,7 +393,7 @@ export default function HomePage() {
       list = [...list].sort((a, b) => a.name.localeCompare(b.name))
     }
     return list
-  }, [toolsList, projectBinToolIds, toolQuickFilter, toolTag, toolSearch, toolSort])
+  }, [toolsList, projectBinToolIds, toolQuickFilter, toolTag, toolSearch, toolSort, dimensionFilters.ranges])
 
   const availableToolTags = useMemo(() => libraryTags(toolsList), [toolsList])
 
@@ -724,6 +729,7 @@ export default function HomePage() {
               })}
             </div>
             <ToolTagFilter tags={availableToolTags} value={toolTag} onChange={setToolTag} />
+            <ToolDimensionFilters values={dimensionFilters.values} onChange={dimensionFilters.setValues} error={dimensionFilters.error} />
             {filteredTools.length > 0 ? (
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
               {filteredTools.map(tool => {

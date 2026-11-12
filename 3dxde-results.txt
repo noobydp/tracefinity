@@ -1,0 +1,105 @@
+features.step Checked definitions: 1
+0.69 s
+Invalid 0
+Incomplete 0
+Valid 1
+Show results
+All definitions
+Needs attention
+Invalid only
+Incomplete only
+Valid only
+Tracefinity bin
+Valid
+
+Closed solid geometry
+
+Source tolerance
+0.0000001 mm
+Open / non-manifold edges
+0 / 0
+1–1 / 1
+
+features-insert.step Checked definitions: 1
+0.01 s
+Invalid 0
+Incomplete 0
+Valid 1
+Show results
+All definitions
+Needs attention
+Invalid only
+Incomplete only
+Valid only
+Contrast insert
+Valid
+
+Closed solid geometry
+
+Source tolerance
+0.0000001 mm
+Open / non-manifold edges
+0 / 0
+1–1 / 1
+
+island.step Checked definitions: 1
+0.17 s
+Invalid 0
+Incomplete 0
+Valid 1
+Show results
+All definitions
+Needs attention
+Invalid only
+Incomplete only
+Valid only
+Tracefinity bin
+Valid
+
+Closed solid geometry
+
+Source tolerance
+0.0000001 mm
+Open / non-manifold edges
+0 / 0
+1–1 / 1
+
+partial.step Checked definitions: 2
+0.09 s
+Invalid 0
+Incomplete 0
+Valid 2
+Show results
+All definitions
+Needs attention
+Invalid only
+Incomplete only
+Valid only
+Part 1
+Valid
+Part 2
+Valid
+1–2 / 2
+
+split.step Checked definitions: 1
+0.24 s
+Invalid 0
+Incomplete 0
+Valid 1
+Show results
+All definitions
+Needs attention
+Invalid only
+Incomplete only
+Valid only
+Tracefinity bin
+Valid
+
+Closed solid geometry
+
+Source tolerance
+0.0000001 mm
+Open / non-manifold edges
+0 / 0
+1–1 / 1
+
